@@ -115,7 +115,7 @@ public actor GitService: GitServicing {
         }
         // Record the real path; a symlinked destination (e.g. under /tmp)
         // confuses later git commands run inside the worktree.
-        arguments.append(destination.resolvingSymlinksInPath().path)
+        arguments.append(Self.realResolvedURL(destination).path)
         if !createBranch {
             arguments.append(branch)
         }
@@ -385,7 +385,9 @@ public actor GitService: GitServicing {
         // the PWD variable; a symlinked working directory (such as anything
         // under /tmp or /var/folders on macOS) or a stale inherited PWD can
         // make commands inside a linked worktree silently act on nothing.
-        let resolvedWorkingDirectory = workingDirectory?.resolvingSymlinksInPath()
+        // URL.resolvingSymlinksInPath() leaves /var and /tmp untouched, so
+        // resolution goes through realpath(3) instead.
+        let resolvedWorkingDirectory = workingDirectory.map(Self.realResolvedURL)
 
         let result = try await Task.detached(priority: .userInitiated) {
             let process = Process()
@@ -424,10 +426,28 @@ public actor GitService: GitServicing {
                 return (PipeReader(pipe: outputPipe), PipeReader(pipe: errorPipe))
             }
 
+            let spawnDate = Date()
             process.waitUntilExit()
+            let exitDate = Date()
 
             let standardOutput = String(data: outputReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
             let standardError = String(data: errorReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
+
+            // TEMPORARY diagnostics for a CI-only failure; remove once solved.
+            if let debugLogPath = processEnvironment["PORCELAIN_GIT_DEBUG_LOG"] {
+                let runMs = Int(exitDate.timeIntervalSince(spawnDate) * 1000)
+                let drainMs = Int(Date().timeIntervalSince(exitDate) * 1000)
+                let line = "cmd=[\(command.joined(separator: " "))] cwd=\(resolvedWorkingDirectory?.path ?? "-") exit=\(process.terminationStatus) runMs=\(runMs) drainMs=\(drainMs) out[\(outputReader.debugState)] err[\(errorReader.debugState)]\n"
+                GitService.spawnQueue.sync {
+                    if let handle = FileHandle(forWritingAtPath: debugLogPath) {
+                        handle.seekToEndOfFile()
+                        handle.write(Data(line.utf8))
+                        try? handle.close()
+                    } else {
+                        FileManager.default.createFile(atPath: debugLogPath, contents: Data(line.utf8))
+                    }
+                }
+            }
 
             return GitCommandResult(
                 command: command,
@@ -442,6 +462,25 @@ public actor GitService: GitServicing {
             throw GitError.commandFailed(result)
         }
         return result
+    }
+
+    /// realpath(3)-based resolution; URL.resolvingSymlinksInPath() skips
+    /// /var and /tmp on macOS. Falls back to resolving the parent when the
+    /// path itself does not exist yet (e.g. a new worktree destination).
+    nonisolated private static func realResolvedURL(_ url: URL) -> URL {
+        func resolve(_ path: String) -> String? {
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard realpath(path, &buffer) != nil else { return nil }
+            return String(decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+        if let resolved = resolve(url.path) {
+            return URL(fileURLWithPath: resolved, isDirectory: true)
+        }
+        if let parent = resolve(url.deletingLastPathComponent().path) {
+            return URL(fileURLWithPath: parent, isDirectory: true)
+                .appendingPathComponent(url.lastPathComponent, isDirectory: true)
+        }
+        return url
     }
 
     private func ensureAskPassScript() throws -> URL {
@@ -649,10 +688,16 @@ private final class PipeReader: @unchecked Sendable {
     private let group = DispatchGroup()
     private let lock = NSLock()
     private var data = Data()
+    private var readerStarted = false
+    private var sawEOF = false
+    private(set) var graceTimedOut = false
 
     init(pipe: Pipe) {
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
+            lock.lock()
+            readerStarted = true
+            lock.unlock()
             let handle = pipe.fileHandleForReading
             while true {
                 let chunk = handle.availableData
@@ -661,6 +706,9 @@ private final class PipeReader: @unchecked Sendable {
                 data.append(chunk)
                 lock.unlock()
             }
+            lock.lock()
+            sawEOF = true
+            lock.unlock()
             group.leave()
         }
     }
@@ -670,9 +718,18 @@ private final class PipeReader: @unchecked Sendable {
     /// though the command finished; once it has exited, wait briefly for
     /// the pipe to drain instead of forever.
     func wait(gracePeriod: TimeInterval) -> Data {
-        _ = group.wait(timeout: .now() + gracePeriod)
+        let outcome = group.wait(timeout: .now() + gracePeriod)
         lock.lock()
         defer { lock.unlock() }
+        if outcome == .timedOut {
+            graceTimedOut = true
+        }
         return data
+    }
+
+    var debugState: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return "started=\(readerStarted) eof=\(sawEOF) graceTimedOut=\(graceTimedOut) bytes=\(data.count)"
     }
 }
