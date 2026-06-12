@@ -113,7 +113,9 @@ public actor GitService: GitServicing {
         if createBranch {
             arguments += ["-b", branch]
         }
-        arguments.append(destination.path)
+        // Record the real path; a symlinked destination (e.g. under /tmp)
+        // confuses later git commands run inside the worktree.
+        arguments.append(destination.resolvingSymlinksInPath().path)
         if !createBranch {
             arguments.append(branch)
         }
@@ -379,15 +381,26 @@ public actor GitService: GitServicing {
             environment["PORCELAIN_GITHUB_TOKEN"] = token
         }
 
+        // Git resolves where it is partly from the recorded worktree path and
+        // the PWD variable; a symlinked working directory (such as anything
+        // under /tmp or /var/folders on macOS) or a stale inherited PWD can
+        // make commands inside a linked worktree silently act on nothing.
+        let resolvedWorkingDirectory = workingDirectory?.resolvingSymlinksInPath()
+
         let result = try await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = executableURL
             process.arguments = command
-            process.currentDirectoryURL = workingDirectory
+            process.currentDirectoryURL = resolvedWorkingDirectory
 
             var processEnvironment = environment
             processEnvironment["GIT_TERMINAL_PROMPT"] = "0"
             processEnvironment["LC_ALL"] = "C"
+            if let resolvedWorkingDirectory {
+                processEnvironment["PWD"] = resolvedWorkingDirectory.path
+            } else {
+                processEnvironment.removeValue(forKey: "PWD")
+            }
             process.environment = processEnvironment
 
             // Pipe setup and launch are serialized process-wide: concurrent
