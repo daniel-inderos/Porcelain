@@ -406,8 +406,8 @@ public actor GitService: GitServicing {
 
             process.waitUntilExit()
 
-            let standardOutput = String(data: outputReader.wait(), encoding: .utf8) ?? ""
-            let standardError = String(data: errorReader.wait(), encoding: .utf8) ?? ""
+            let standardOutput = String(data: outputReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
+            let standardError = String(data: errorReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
 
             return GitCommandResult(
                 command: command,
@@ -627,18 +627,32 @@ public actor GitService: GitServicing {
 /// never blocks on a full pipe buffer.
 private final class PipeReader: @unchecked Sendable {
     private let group = DispatchGroup()
+    private let lock = NSLock()
     private var data = Data()
 
     init(pipe: Pipe) {
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let handle = pipe.fileHandleForReading
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                lock.lock()
+                data.append(chunk)
+                lock.unlock()
+            }
             group.leave()
         }
     }
 
-    func wait() -> Data {
-        group.wait()
+    /// Git can hand its pipes to a detached helper (auto maintenance,
+    /// fsmonitor) that outlives the command, so EOF may never arrive even
+    /// though the command finished; once it has exited, wait briefly for
+    /// the pipe to drain instead of forever.
+    func wait(gracePeriod: TimeInterval) -> Data {
+        _ = group.wait(timeout: .now() + gracePeriod)
+        lock.lock()
+        defer { lock.unlock() }
         return data
     }
 }
