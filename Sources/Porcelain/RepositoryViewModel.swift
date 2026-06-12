@@ -25,6 +25,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     @Published var selectedCommit: GitCommit?
     @Published var selectedCommitFile: GitCommitFile?
     @Published var diff = DiffContent(path: "", text: "")
+    @Published var commitDiff = DiffContent(path: "", text: "")
     @Published var commitSummary = ""
     @Published var commitDescription = ""
     @Published var amendCommit = false
@@ -110,9 +111,11 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         Task {
             do {
                 status = try await gitService.status(in: repository.url)
-                if let selectedChange {
+                if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
                     selectedChangeIsStaged = selectedChange.isStaged
                     await selectChange(selectedChange, staged: selectedChangeIsStaged)
+                } else {
+                    clearChangeSelection()
                 }
             } catch {
                 alert = AppAlert(error: error)
@@ -140,10 +143,12 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 await loadWorktreeInfos()
             }
 
-            if selectedChange == nil, let first = unstagedChanges.first ?? stagedChanges.first {
-                await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
-            } else if let selectedChange {
+            if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
                 await selectChange(selectedChange, staged: selectedChangeIsStaged)
+            } else if let first = unstagedChanges.first ?? stagedChanges.first {
+                await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
+            } else {
+                clearChangeSelection()
             }
 
             if selectedCommit == nil, let firstCommit = commits.first {
@@ -168,6 +173,11 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         }
     }
 
+    private func clearChangeSelection() {
+        selectedChange = nil
+        diff = DiffContent(path: "", text: "")
+    }
+
     func selectChange(_ change: GitChange, staged: Bool) async {
         selectedChange = change
         selectedChangeIsStaged = staged
@@ -184,11 +194,11 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         do {
             commitFiles = try await gitService.filesChanged(in: commit, repositoryURL: repository.url)
             selectedCommitFile = commitFiles.first
-            diff = try await gitService.diff(for: commit, file: selectedCommitFile, repositoryURL: repository.url)
+            commitDiff = try await gitService.diff(for: commit, file: selectedCommitFile, repositoryURL: repository.url)
         } catch {
             commitFiles = []
             selectedCommitFile = nil
-            diff = DiffContent(path: commit.shortHash, text: "")
+            commitDiff = DiffContent(path: commit.shortHash, text: "")
             alert = AppAlert(error: error)
         }
     }
@@ -197,7 +207,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         selectedCommitFile = file
         guard let selectedCommit else { return }
         do {
-            diff = try await gitService.diff(for: selectedCommit, file: file, repositoryURL: repository.url)
+            commitDiff = try await gitService.diff(for: selectedCommit, file: file, repositoryURL: repository.url)
         } catch {
             alert = AppAlert(error: error)
         }

@@ -8,7 +8,20 @@ struct RemotesView: View {
     @State private var editingRemote: GitRemote?
 
     var body: some View {
-        VStack(spacing: 0) {
+        Form {
+            remoteEditorSection
+            githubSection
+            remotesSection
+        }
+        .formStyle(.grouped)
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .safeAreaInset(edge: .top) {
+            remotesHeader
+        }
+    }
+
+    private var remotesHeader: some View {
+        GlassEffectContainer(spacing: 12) {
             HStack {
                 Text("Remotes")
                     .font(.headline)
@@ -18,101 +31,111 @@ struct RemotesView: View {
                 } label: {
                     Label("Open Repository", systemImage: "safari")
                 }
+                .buttonStyle(.glass)
                 .disabled(!viewModel.hasGitHubRemote)
             }
-            .padding(12)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
 
-            Divider()
-
-            HStack(alignment: .top, spacing: 18) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(editingRemote == nil ? "Add Remote" : "Edit Remote")
-                        .font(.headline)
-                    TextField("Name", text: $remoteName)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(editingRemote != nil)
-                    TextField("URL", text: $remoteURL)
-                        .textFieldStyle(.roundedBorder)
-                    HStack {
-                        Button {
-                            if editingRemote == nil {
-                                viewModel.addRemote(named: remoteName, url: remoteURL)
-                            } else {
-                                viewModel.setRemote(named: remoteName, url: remoteURL)
-                            }
-                            clearForm()
-                        } label: {
-                            Label(editingRemote == nil ? "Add" : "Save", systemImage: editingRemote == nil ? "plus" : "checkmark")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(remoteName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                        if editingRemote != nil {
-                            Button("Cancel", action: clearForm)
-                        }
+    private var remoteEditorSection: some View {
+        Section {
+            TextField("Name", text: $remoteName)
+                .textFieldStyle(.roundedBorder)
+                .disabled(editingRemote != nil)
+            TextField("URL", text: $remoteURL)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Button {
+                    if editingRemote == nil {
+                        viewModel.addRemote(named: remoteName, url: remoteURL)
+                    } else {
+                        viewModel.setRemote(named: remoteName, url: remoteURL)
                     }
-
-                    Divider()
-
-                    Text("GitHub")
-                        .font(.headline)
-                    Button {
-                        viewModel.openNewPullRequest()
-                    } label: {
-                        Label("Create Pull Request", systemImage: "arrow.triangle.pull")
-                    }
-                    .disabled(!viewModel.hasGitHubRemote || viewModel.status.branchName == nil)
-
-                    Button {
-                        viewModel.openCompareOnRemote()
-                    } label: {
-                        Label("Open Compare", systemImage: "arrow.left.arrow.right")
-                    }
-                    .disabled(!viewModel.hasGitHubRemote || viewModel.status.branchName == nil)
+                    clearForm()
+                } label: {
+                    Label(editingRemote == nil ? "Add" : "Save", systemImage: editingRemote == nil ? "plus" : "checkmark")
                 }
-                .frame(width: 300, alignment: .topLeading)
-                .padding(16)
+                .buttonStyle(.glassProminent)
+                .disabled(remoteName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                Divider()
+                if editingRemote != nil {
+                    Button("Cancel", action: clearForm)
+                        .buttonStyle(.glass)
+                }
+            }
+        } header: {
+            Text(editingRemote == nil ? "Add Remote" : "Edit Remote")
+        } footer: {
+            Text("Remote settings are written to this repository's local Git configuration.")
+                .foregroundStyle(.secondary)
+        }
+    }
 
-                if viewModel.remotes.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: "network")
-                            .font(.title)
-                            .foregroundStyle(.secondary)
-                        Text("No remotes")
-                            .font(.headline)
-                        Text("Add a remote to fetch, pull, and push.")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(viewModel.remotes) { remote in
-                                RemoteRow(
-                                    remote: remote,
-                                    onEdit: {
-                                        editingRemote = remote
-                                        remoteName = remote.name
-                                        remoteURL = remote.fetchURL ?? remote.pushURL ?? ""
-                                    },
-                                    onRemove: {
-                                        if confirmDestructive(title: "Remove \(remote.name)?", message: "This removes the remote from local Git configuration.") {
-                                            viewModel.removeRemote(named: remote.name)
-                                        }
-                                    },
-                                    onCopy: {
-                                        viewModel.copyPath(remote.displayURL)
-                                    }
-                                )
+    private var githubSection: some View {
+        Section("GitHub") {
+            Button {
+                viewModel.openNewPullRequest()
+            } label: {
+                Label("Create Pull Request", systemImage: "arrow.triangle.pull")
+            }
+            .buttonStyle(.glass)
+            .disabled(!viewModel.hasGitHubRemote || viewModel.status.branchName == nil)
+
+            Button {
+                viewModel.openCompareOnRemote()
+            } label: {
+                Label("Open Compare", systemImage: "arrow.left.arrow.right")
+            }
+            .buttonStyle(.glass)
+            .disabled(!viewModel.hasGitHubRemote || viewModel.status.branchName == nil)
+        }
+    }
+
+    private var remotesSection: some View {
+        Section("Configured Remotes") {
+            if viewModel.remotes.isEmpty {
+                emptyRemotesView
+            } else {
+                ForEach(viewModel.remotes) { remote in
+                    RemoteRow(
+                        remote: remote,
+                        onEdit: {
+                            editingRemote = remote
+                            remoteName = remote.name
+                            remoteURL = remote.fetchURL ?? remote.pushURL ?? ""
+                        },
+                        onRemove: {
+                            if confirmDestructive(title: "Remove \(remote.name)?", message: "This removes the remote from local Git configuration.") {
+                                viewModel.removeRemote(named: remote.name)
                             }
+                        },
+                        onCopy: {
+                            viewModel.copyPath(remote.displayURL)
                         }
-                        .padding(.vertical, 8)
-                    }
+                    )
                 }
             }
         }
+    }
+
+    private var emptyRemotesView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "network")
+                .font(.title)
+                .foregroundStyle(.secondary)
+            Text("No remotes")
+                .font(.headline)
+            Text("Add a remote to fetch, pull, and push.")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 26)
     }
 
     private func clearForm() {
@@ -148,6 +171,7 @@ private struct RemoteRow: View {
             .textSelection(.enabled)
             Spacer()
             Button("Edit", action: onEdit)
+                .buttonStyle(.glass)
             Menu {
                 Button("Copy URL", action: onCopy)
                 Button("Remove", role: .destructive, action: onRemove)
@@ -155,6 +179,7 @@ private struct RemoteRow: View {
                 Image(systemName: "ellipsis.circle")
             }
             .menuStyle(.button)
+            .buttonStyle(.glass)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -184,11 +209,13 @@ struct SettingsPaneView: View {
                     Button("Save") {
                         viewModel.saveGitHubToken()
                     }
+                    .buttonStyle(.glassProminent)
                     .disabled(viewModel.githubToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     Button("Delete") {
                         viewModel.deleteGitHubToken()
                     }
+                    .buttonStyle(.glass)
                     .disabled(!viewModel.hasGitHubToken)
                 }
                 Text(viewModel.hasGitHubToken ? "A token is stored in Keychain." : "Tokens are stored only in Keychain.")
@@ -203,6 +230,7 @@ struct SettingsPaneView: View {
                     } label: {
                         Label("Open Remote", systemImage: "safari")
                     }
+                    .buttonStyle(.glass)
                     .disabled(!viewModel.hasGitHubRemote)
 
                     Button {
@@ -210,6 +238,7 @@ struct SettingsPaneView: View {
                     } label: {
                         Label("New Pull Request", systemImage: "arrow.triangle.pull")
                     }
+                    .buttonStyle(.glass)
                     .disabled(!viewModel.hasGitHubRemote || viewModel.status.branchName == nil)
                 }
             }
@@ -230,4 +259,3 @@ struct SettingsPaneView: View {
         .padding(18)
     }
 }
-

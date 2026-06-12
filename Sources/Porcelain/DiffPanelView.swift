@@ -6,7 +6,28 @@ struct DiffPanelView: View {
     @Binding var mode: DiffMode
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
+            if diff.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                EmptyDiffView()
+            } else if diff.isBinary {
+                BinaryDiffView(diff: diff)
+            } else {
+                switch mode {
+                case .unified:
+                    UnifiedDiffView(text: diff.text)
+                case .sideBySide:
+                    SideBySideDiffView(text: diff.text)
+                }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            diffHeader
+        }
+        .background(.background)
+    }
+
+    private var diffHeader: some View {
+        GlassEffectContainer(spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(diff.path.isEmpty ? "Diff" : diff.path)
@@ -26,26 +47,16 @@ struct DiffPanelView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 220)
             }
-            .padding(12)
-
-            Divider()
-
-            if diff.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                EmptyDiffView()
-            } else if diff.isBinary {
-                BinaryDiffView(diff: diff)
-            } else {
-                switch mode {
-                case .unified:
-                    UnifiedDiffView(text: diff.text)
-                case .sideBySide:
-                    SideBySideDiffView(text: diff.text)
-                }
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: .rect(cornerRadius: 14))
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
         }
-        .background(Color(nsColor: .textBackgroundColor))
     }
 }
 
@@ -104,6 +115,7 @@ private struct UnifiedDiffView: View {
             }
             .frame(minWidth: 700, alignment: .leading)
         }
+        .scrollEdgeEffectStyle(.hard, for: .top)
     }
 
     private var diffLines: [RenderedDiffLine] {
@@ -140,6 +152,7 @@ private struct SideBySideDiffView: View {
             }
             .frame(minWidth: 860, alignment: .leading)
         }
+        .scrollEdgeEffectStyle(.hard, for: .top)
     }
 
     private func leftText(for line: String) -> String {
@@ -183,13 +196,13 @@ private struct RenderedDiffLine {
 
     var background: Color {
         if text.hasPrefix("+") && !text.hasPrefix("+++") {
-            return Color.green.opacity(0.14)
+            return Color.green.opacity(0.16)
         }
         if text.hasPrefix("-") && !text.hasPrefix("---") {
-            return Color.red.opacity(0.14)
+            return Color.red.opacity(0.16)
         }
         if text.hasPrefix("@@") {
-            return Color.accentColor.opacity(0.12)
+            return Color.accentColor.opacity(0.14)
         }
         return Color.clear
     }

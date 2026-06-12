@@ -6,15 +6,21 @@ struct HistoryView: View {
     @State private var diffMode: DiffMode = .unified
 
     var body: some View {
-        HSplitView {
-            CommitListView(viewModel: viewModel)
-                .frame(minWidth: 300, idealWidth: 340, maxWidth: 460)
+        // Same fit guarantee as ChangesView: width-scaled caps on the side
+        // panes and a pinned ideal on the diff pane keep HSplitView from
+        // overflowing the window.
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            HSplitView {
+                CommitListView(viewModel: viewModel)
+                    .frame(minWidth: 280, idealWidth: 320, maxWidth: max(280, min(460, width * 0.34)))
 
-            CommitFileListView(viewModel: viewModel)
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 340)
+                CommitFileListView(viewModel: viewModel)
+                    .frame(minWidth: 200, idealWidth: 240, maxWidth: max(200, min(340, width * 0.24)))
 
-            DiffPanelView(diff: viewModel.diff, mode: $diffMode)
-                .frame(minWidth: 440)
+                DiffPanelView(diff: viewModel.commitDiff, mode: $diffMode)
+                    .frame(minWidth: 340, idealWidth: 460, maxWidth: .infinity)
+            }
         }
     }
 }
@@ -23,22 +29,7 @@ private struct CommitListView: View {
     @ObservedObject var viewModel: RepositoryViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("History")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    viewModel.refresh()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .help("Refresh history")
-            }
-            .padding(12)
-
-            Divider()
-
+        Group {
             if viewModel.commits.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "clock")
@@ -51,27 +42,56 @@ private struct CommitListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(viewModel.commits) { commit in
-                            CommitRow(
-                                commit: commit,
-                                isSelected: viewModel.selectedCommit?.hash == commit.hash
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                Task {
-                                    await viewModel.selectCommit(commit)
-                                }
-                            }
+                List(selection: selection) {
+                    ForEach(viewModel.commits) { commit in
+                        CommitRow(commit: commit)
+                            .tag(commit.id)
                             .contextMenu {
                                 Button("Copy Hash") { viewModel.copyCommitHash(commit) }
                                 Button("Open on GitHub") { viewModel.openCommitOnRemote(commit) }
                             }
-                        }
                     }
-                    .padding(.vertical, 6)
                 }
+                .scrollEdgeEffectStyle(.soft, for: .top)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("History")
+                .font(.headline)
+            Spacer()
+            Button {
+                viewModel.refresh()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.glass)
+            .help("Refresh history")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var selection: Binding<GitCommit.ID?> {
+        Binding {
+            viewModel.selectedCommit?.id
+        } set: { commitID in
+            guard
+                let commitID,
+                let commit = viewModel.commits.first(where: { $0.id == commitID })
+            else { return }
+            Task {
+                await viewModel.selectCommit(commit)
             }
         }
     }
@@ -79,7 +99,6 @@ private struct CommitListView: View {
 
 private struct CommitRow: View {
     let commit: GitCommit
-    let isSelected: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -99,9 +118,7 @@ private struct CommitRow: View {
             }
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
     }
 
     private var formattedDate: String {
@@ -114,87 +131,119 @@ private struct CommitFileListView: View {
     @ObservedObject var viewModel: RepositoryViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Commit")
-                        .font(.headline)
-                    if let commit = viewModel.selectedCommit {
-                        Text(commit.shortHash)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if let commit = viewModel.selectedCommit {
-                    Menu {
-                        Button("Copy Hash") { viewModel.copyCommitHash(commit) }
-                        Button("Open on GitHub") { viewModel.openCommitOnRemote(commit) }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .menuStyle(.button)
-                }
-            }
-            .padding(12)
-
-            Divider()
-
+        List(selection: selection) {
             if let commit = viewModel.selectedCommit {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(commit.subject)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(3)
-                    Text("\(commit.authorName) <\(commit.authorEmail)>")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                Section {
+                    CommitDetailsBlock(commit: commit)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                Divider()
             }
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    Button {
-                        Task {
-                            await viewModel.selectCommitFile(nil)
-                        }
-                    } label: {
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text("Full commit diff")
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.plain)
+            Section {
+                FullCommitDiffRow()
+                    .tag(CommitFileSelectionKey.fullDiff)
 
-                    ForEach(viewModel.commitFiles) { file in
-                        CommitFileRow(
-                            file: file,
-                            isSelected: viewModel.selectedCommitFile?.id == file.id
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            Task {
-                                await viewModel.selectCommitFile(file)
-                            }
-                        }
-                    }
+                ForEach(viewModel.commitFiles) { file in
+                    CommitFileRow(file: file)
+                        .tag(CommitFileSelectionKey.file(file.id))
                 }
-                .padding(.vertical, 6)
+            }
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Commit")
+                    .font(.headline)
+                if let commit = viewModel.selectedCommit {
+                    Text(commit.shortHash)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if let commit = viewModel.selectedCommit {
+                Menu {
+                    Button("Copy Hash") { viewModel.copyCommitHash(commit) }
+                    Button("Open on GitHub") { viewModel.openCommitOnRemote(commit) }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.button)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var selection: Binding<CommitFileSelectionKey?> {
+        Binding {
+            guard viewModel.selectedCommit != nil else { return nil }
+            guard let selectedFile = viewModel.selectedCommitFile else { return .fullDiff }
+            return .file(selectedFile.id)
+        } set: { key in
+            guard let key else { return }
+            switch key {
+            case .fullDiff:
+                Task {
+                    await viewModel.selectCommitFile(nil)
+                }
+            case .file(let fileID):
+                guard let file = viewModel.commitFiles.first(where: { $0.id == fileID }) else { return }
+                Task {
+                    await viewModel.selectCommitFile(file)
+                }
             }
         }
     }
 }
 
+private enum CommitFileSelectionKey: Hashable {
+    case fullDiff
+    case file(GitCommitFile.ID)
+}
+
+private struct CommitDetailsBlock: View {
+    let commit: GitCommit
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(commit.subject)
+                .font(.callout.weight(.medium))
+                .lineLimit(3)
+            Text("\(commit.authorName) <\(commit.authorEmail)>")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+    }
+}
+
+private struct FullCommitDiffRow: View {
+    var body: some View {
+        HStack {
+            Image(systemName: "doc.text")
+            Text("Full commit diff")
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+}
+
 private struct CommitFileRow: View {
     let file: GitCommitFile
-    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -219,9 +268,6 @@ private struct CommitFileRow: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
     }
 }
-

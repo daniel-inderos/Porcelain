@@ -11,16 +11,6 @@ struct RepositoryView: View {
                 ConflictBanner(viewModel: viewModel)
             }
 
-            Picker("Section", selection: $viewModel.selectedTab) {
-                ForEach(PorcelainTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(12)
-
-            Divider()
-
             Group {
                 switch viewModel.selectedTab {
                 case .changes:
@@ -39,19 +29,20 @@ struct RepositoryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .navigationTitle(viewModel.repository.name)
+        .navigationSubtitle(viewModel.syncSummary)
         .toolbar {
-            ToolbarItemGroup {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(viewModel.repository.name)
-                        .font(.headline)
-                    Text(viewModel.repository.url.path)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            ToolbarItem(placement: .principal) {
+                Picker("Section", selection: $viewModel.selectedTab) {
+                    ForEach(PorcelainTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
                 }
-                .frame(width: 220, alignment: .leading)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
 
+            ToolbarItemGroup {
                 Picker("Branch", selection: branchSelection) {
                     if viewModel.branches.isEmpty {
                         Text(viewModel.status.branchDisplayName).tag(viewModel.status.branchDisplayName)
@@ -61,13 +52,11 @@ struct RepositoryView: View {
                         }
                     }
                 }
-                .frame(width: 180)
+                .frame(maxWidth: 140)
                 .help("Current branch")
+            }
 
-                Text(viewModel.syncSummary)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 120, alignment: .leading)
-
+            ToolbarItemGroup {
                 Button {
                     viewModel.refresh()
                 } label: {
@@ -99,18 +88,12 @@ struct RepositoryView: View {
                 }
                 .help(viewModel.status.upstreamName == nil ? "Push and set upstream" : "Push")
                 .disabled(viewModel.isBusy)
-
-                Button {
-                    viewModel.selectedTab = .settings
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("Settings")
             }
         }
         .overlay(alignment: .top) {
             if let message = viewModel.activityMessage {
                 ActivityOverlay(message: message)
+                    .padding(.top, viewModel.hasConflicts ? 58 : 0)
             }
         }
         .alert(item: $viewModel.alert) { alert in
@@ -149,6 +132,8 @@ private struct ConflictBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.12))
+        .glassEffect(.regular.tint(.orange.opacity(0.2)), in: .rect(cornerRadius: 14))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

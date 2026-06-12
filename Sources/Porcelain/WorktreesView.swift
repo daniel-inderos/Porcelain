@@ -9,13 +9,10 @@ struct WorktreesView: View {
     @State private var worktreePendingRemoval: WorktreeInfo?
     @State private var showingPruneConfirmation = false
     @State private var reviewSession: WorktreeReviewSession?
+    @Namespace private var glassNamespace
 
     var body: some View {
-        VStack(spacing: 0) {
-            if reviewSession == nil {
-                header
-                Divider()
-            }
+        GlassEffectContainer(spacing: 24) {
             content
         }
         .sheet(isPresented: $showingNewWorktreeSheet) {
@@ -70,16 +67,19 @@ struct WorktreesView: View {
                     Label("Prune \(prunableCount)", systemImage: "trash")
                 }
                 .disabled(viewModel.isBusy)
+                .buttonStyle(.glass)
             }
             Button {
                 showingNewWorktreeSheet = true
             } label: {
                 Label("New Worktree", systemImage: "plus")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .disabled(viewModel.isBusy)
         }
         .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     @ViewBuilder
@@ -90,31 +90,50 @@ struct WorktreesView: View {
                 parentRepositoryURL: viewModel.repository.url,
                 viewModel: reviewSession.viewModel,
                 openWorktree: openWorktree,
+                glassNamespace: glassNamespace,
                 onBack: dismissReview
             )
-        } else if showsEmptyState {
-            WorktreesEmptyState {
-                showingNewWorktreeSheet = true
-            }
         } else {
+            worktreesOverview
+        }
+    }
+
+    private var worktreesOverview: some View {
+        GeometryReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(viewModel.worktreeInfos) { info in
-                        WorktreeCard(
-                            info: info,
-                            repositoryURL: viewModel.repository.url,
-                            viewModel: viewModel,
-                            openWorktree: openWorktree,
-                            onReview: {
-                                beginReview(for: info)
-                            },
-                            onRemove: {
-                                worktreePendingRemoval = info
-                            }
-                        )
+                if showsEmptyState {
+                    WorktreesEmptyState {
+                        showingNewWorktreeSheet = true
                     }
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: proxy.size.height)
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(viewModel.worktreeInfos) { info in
+                            WorktreeCard(
+                                info: info,
+                                repositoryURL: viewModel.repository.url,
+                                viewModel: viewModel,
+                                openWorktree: openWorktree,
+                                glassNamespace: glassNamespace,
+                                onReview: {
+                                    beginReview(for: info)
+                                },
+                                onRemove: {
+                                    worktreePendingRemoval = info
+                                }
+                            )
+                        }
+                    }
+                    .padding(16)
                 }
-                .padding(16)
+            }
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .safeAreaInset(edge: .top) {
+                header
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
             }
         }
     }
@@ -138,15 +157,22 @@ struct WorktreesView: View {
     private func beginReview(for info: WorktreeInfo) {
         guard !info.worktree.isBare, !info.worktree.isPrunable else { return }
         if isCurrent(info) {
-            viewModel.selectedTab = .changes
+            withAnimation(.smooth) {
+                viewModel.selectedTab = .changes
+            }
             return
         }
 
-        reviewSession = WorktreeReviewSession(info: info, viewModel: viewModel.makeWorktreeReviewViewModel(for: info.worktree))
+        let session = WorktreeReviewSession(info: info, viewModel: viewModel.makeWorktreeReviewViewModel(for: info.worktree))
+        withAnimation(.smooth) {
+            reviewSession = session
+        }
     }
 
     private func dismissReview() {
-        reviewSession = nil
+        withAnimation(.smooth) {
+            reviewSession = nil
+        }
         viewModel.refreshWorktrees()
     }
 
@@ -188,6 +214,7 @@ private struct WorktreeCard: View {
     let repositoryURL: URL
     @ObservedObject var viewModel: RepositoryViewModel
     let openWorktree: (URL) -> Void
+    let glassNamespace: Namespace.ID
     let onReview: () -> Void
     let onRemove: () -> Void
 
@@ -249,12 +276,14 @@ private struct WorktreeCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isCurrent ? Color.accentColor.opacity(0.45) : Color.secondary.opacity(0.16))
-        )
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .glassEffectID(info.id, in: glassNamespace)
+        .overlay {
+            if isCurrent {
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1)
+            }
+        }
         .contextMenu {
             menuItems
         }
@@ -472,7 +501,7 @@ private struct WorktreesEmptyState: View {
             } label: {
                 Label("New Worktree", systemImage: "plus")
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)

@@ -6,12 +6,15 @@ struct WorktreeReviewView: View {
     let parentRepositoryURL: URL
     @ObservedObject var viewModel: RepositoryViewModel
     let openWorktree: (URL) -> Void
+    let glassNamespace: Namespace.ID
     let onBack: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             ChangesView(viewModel: viewModel)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,7 +100,9 @@ struct WorktreeReviewView: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .glassEffectID(info.id, in: glassNamespace)
     }
 
     private var statsText: String {
