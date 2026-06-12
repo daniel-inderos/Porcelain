@@ -52,7 +52,7 @@ struct RepositoryView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 160)
+                .frame(maxWidth: 140)
                 .help("Current branch")
             }
 

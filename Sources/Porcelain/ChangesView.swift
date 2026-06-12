@@ -7,15 +7,22 @@ struct ChangesView: View {
     @State private var diffMode: DiffMode = .unified
 
     var body: some View {
-        HSplitView {
-            ChangeListView(viewModel: viewModel)
-                .frame(minWidth: 250, idealWidth: 300, maxWidth: 420)
+        // HSplitView lets panes keep stale widths when the window shrinks or
+        // wide diff content inflates a pane's ideal size, overflowing the
+        // window. Scale the side panes' caps with the actual width and pin
+        // the diff pane's ideal so the split always fits.
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            HSplitView {
+                ChangeListView(viewModel: viewModel)
+                    .frame(minWidth: 250, idealWidth: 300, maxWidth: max(250, min(420, width * 0.29)))
 
-            DiffPanelView(diff: viewModel.diff, mode: $diffMode)
-                .frame(minWidth: 380)
+                DiffPanelView(diff: viewModel.diff, mode: $diffMode)
+                    .frame(minWidth: 340, idealWidth: 460, maxWidth: .infinity)
 
-            CommitPanelView(viewModel: viewModel)
-                .frame(minWidth: 260, idealWidth: 320, maxWidth: 380)
+                CommitPanelView(viewModel: viewModel)
+                    .frame(minWidth: 260, idealWidth: 320, maxWidth: max(260, min(380, width * 0.30)))
+            }
         }
     }
 }

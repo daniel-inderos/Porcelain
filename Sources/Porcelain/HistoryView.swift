@@ -6,15 +6,21 @@ struct HistoryView: View {
     @State private var diffMode: DiffMode = .unified
 
     var body: some View {
-        HSplitView {
-            CommitListView(viewModel: viewModel)
-                .frame(minWidth: 280, idealWidth: 320, maxWidth: 460)
+        // Same fit guarantee as ChangesView: width-scaled caps on the side
+        // panes and a pinned ideal on the diff pane keep HSplitView from
+        // overflowing the window.
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            HSplitView {
+                CommitListView(viewModel: viewModel)
+                    .frame(minWidth: 280, idealWidth: 320, maxWidth: max(280, min(460, width * 0.34)))
 
-            CommitFileListView(viewModel: viewModel)
-                .frame(minWidth: 200, idealWidth: 240, maxWidth: 340)
+                CommitFileListView(viewModel: viewModel)
+                    .frame(minWidth: 200, idealWidth: 240, maxWidth: max(200, min(340, width * 0.24)))
 
-            DiffPanelView(diff: viewModel.diff, mode: $diffMode)
-                .frame(minWidth: 380)
+                DiffPanelView(diff: viewModel.commitDiff, mode: $diffMode)
+                    .frame(minWidth: 340, idealWidth: 460, maxWidth: .infinity)
+            }
         }
     }
 }
