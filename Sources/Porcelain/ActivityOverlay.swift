@@ -12,9 +12,7 @@ struct ActivityOverlay: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .shadow(radius: 10, y: 4)
+        .glassEffect()
         .padding(.top, 10)
     }
 }
