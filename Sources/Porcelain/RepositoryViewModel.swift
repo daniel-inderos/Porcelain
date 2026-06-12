@@ -459,10 +459,10 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     @discardableResult
-    private func withActivity<Value>(
+    private func withActivity<Value: Sendable>(
         _ message: String,
         presentsAlert: Bool = true,
-        operation: () async throws -> Value
+        operation: @MainActor () async throws -> Value
     ) async -> (value: Value?, alert: AppAlert?) {
         activityMessage = message
         defer { activityMessage = nil }
