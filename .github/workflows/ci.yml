@@ -15,18 +15,6 @@ jobs:
       - name: Build
         run: swift build
         timeout-minutes: 15
-      # TEMPORARY diagnostic: trace every git invocation the worktree test
-      # makes (argv, cwd, exit code, child spawns). Remove once the CI-only
-      # failure is understood.
-      - name: Worktree test with git trace
-        timeout-minutes: 5
-        continue-on-error: true
-        env:
-          GIT_TRACE2: /tmp/git-trace2.log
-        run: swift test --filter testWorktreeLifecycleAndChangeSummary 2>&1 || true
-      - name: Dump git trace
-        if: always()
-        run: cat /tmp/git-trace2.log 2>/dev/null || echo "no trace written"
       - name: Test
         run: swift test --parallel
         timeout-minutes: 8

@@ -39,6 +39,8 @@ public protocol GitServicing: Sendable {
 public actor GitService: GitServicing {
     public static let shared = GitService()
 
+    static let spawnQueue = DispatchQueue(label: "app.porcelain.git-spawn")
+
     private let executableURL: URL
     private let fileManager: FileManager
     private let keychainStore: KeychainStore
@@ -388,21 +390,26 @@ public actor GitService: GitServicing {
             processEnvironment["LC_ALL"] = "C"
             process.environment = processEnvironment
 
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
+            // Pipe setup and launch are serialized process-wide: concurrent
+            // pipe()/spawn pairs race on file-descriptor reuse in the shared
+            // descriptor table, which can cross-wire or orphan child output.
+            // Only the launch is serialized; waiting stays concurrent.
+            let (outputReader, errorReader) = try GitService.spawnQueue.sync {
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
 
-            do {
-                try process.run()
-            } catch {
-                throw GitError.gitMissing
+                do {
+                    try process.run()
+                } catch {
+                    throw GitError.gitMissing
+                }
+
+                // Drain both pipes while the process runs; reading only after
+                // waitUntilExit deadlocks once output exceeds the pipe buffer.
+                return (PipeReader(pipe: outputPipe), PipeReader(pipe: errorPipe))
             }
-
-            // Drain both pipes while the process runs; reading only after
-            // waitUntilExit deadlocks once output exceeds the pipe buffer.
-            let outputReader = PipeReader(pipe: outputPipe)
-            let errorReader = PipeReader(pipe: errorPipe)
 
             process.waitUntilExit()
 
