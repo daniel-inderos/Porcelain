@@ -10,32 +10,32 @@ struct WorktreeReviewView: View {
     let onBack: () -> Void
 
     var body: some View {
-        ChangesView(viewModel: viewModel)
-            .safeAreaInset(edge: .top) {
-                header
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+            ChangesView(viewModel: viewModel)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            viewModel.start()
+        }
+        .onExitCommand {
+            onBack()
+        }
+        .overlay(alignment: .top) {
+            if let message = viewModel.activityMessage {
+                ActivityOverlay(message: message)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onAppear {
-                viewModel.start()
-            }
-            .onExitCommand {
-                onBack()
-            }
-            .overlay(alignment: .top) {
-                if let message = viewModel.activityMessage {
-                    ActivityOverlay(message: message)
-                }
-            }
-            .alert(item: $viewModel.alert) { alert in
-                Alert(
-                    title: Text(alert.title),
-                    message: Text(alert.message),
-                    dismissButton: .default(Text("OK"))
-                )
-            }
+        }
+        .alert(item: $viewModel.alert) { alert in
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
     }
 
     private var header: some View {

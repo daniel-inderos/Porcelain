@@ -8,13 +8,13 @@ struct HistoryView: View {
     var body: some View {
         HSplitView {
             CommitListView(viewModel: viewModel)
-                .frame(minWidth: 300, idealWidth: 340, maxWidth: 460)
+                .frame(minWidth: 280, idealWidth: 320, maxWidth: 460)
 
             CommitFileListView(viewModel: viewModel)
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 340)
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 340)
 
             DiffPanelView(diff: viewModel.diff, mode: $diffMode)
-                .frame(minWidth: 440)
+                .frame(minWidth: 380)
         }
     }
 }
@@ -71,7 +71,7 @@ private struct CommitListView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
     }
@@ -174,7 +174,7 @@ private struct CommitFileListView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
     }

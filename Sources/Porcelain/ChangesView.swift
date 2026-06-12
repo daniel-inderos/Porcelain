@@ -12,10 +12,10 @@ struct ChangesView: View {
                 .frame(minWidth: 250, idealWidth: 300, maxWidth: 420)
 
             DiffPanelView(diff: viewModel.diff, mode: $diffMode)
-                .frame(minWidth: 420)
+                .frame(minWidth: 380)
 
             CommitPanelView(viewModel: viewModel)
-                .frame(minWidth: 280, idealWidth: 320, maxWidth: 380)
+                .frame(minWidth: 260, idealWidth: 320, maxWidth: 380)
         }
     }
 }
@@ -81,7 +81,7 @@ private struct ChangeListView: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .glassEffect(.regular, in: .rect(cornerRadius: 14))
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 6)
     }

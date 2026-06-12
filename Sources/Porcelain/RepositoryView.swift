@@ -88,13 +88,6 @@ struct RepositoryView: View {
                 }
                 .help(viewModel.status.upstreamName == nil ? "Push and set upstream" : "Push")
                 .disabled(viewModel.isBusy)
-
-                Button {
-                    viewModel.selectedTab = .settings
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .help("Settings")
             }
         }
         .overlay(alignment: .top) {

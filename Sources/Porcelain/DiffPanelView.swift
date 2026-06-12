@@ -47,6 +47,7 @@ struct DiffPanelView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(width: 220)
             }
             .padding(.horizontal, 12)
@@ -114,7 +115,7 @@ private struct UnifiedDiffView: View {
             }
             .frame(minWidth: 700, alignment: .leading)
         }
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectStyle(.hard, for: .top)
     }
 
     private var diffLines: [RenderedDiffLine] {
@@ -151,7 +152,7 @@ private struct SideBySideDiffView: View {
             }
             .frame(minWidth: 860, alignment: .leading)
         }
-        .scrollEdgeEffectStyle(.soft, for: .top)
+        .scrollEdgeEffectStyle(.hard, for: .top)
     }
 
     private func leftText(for line: String) -> String {
