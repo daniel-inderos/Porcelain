@@ -64,7 +64,8 @@ public enum GitParsers {
         )
     }
 
-    public static func parseBranches(_ output: String, divergence: @Sendable (String, String) -> (Int, Int)) -> [GitBranch] {
+    /// Parses `git branch --format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)`.
+    public static func parseBranches(_ output: String) -> [GitBranch] {
         output
             .split(whereSeparator: \.isNewline)
             .compactMap { line -> GitBranch? in
@@ -73,8 +74,8 @@ public enum GitParsers {
                 let current = parts[0] == "*"
                 let name = parts[1]
                 let upstream = parts[2].isEmpty ? nil : parts[2]
-                let counts = upstream.map { divergence(name, $0) } ?? (0, 0)
-                return GitBranch(name: name, isCurrent: current, upstream: upstream, ahead: counts.0, behind: counts.1)
+                let counts = parseTrack(parts.count >= 4 ? parts[3] : "")
+                return GitBranch(name: name, isCurrent: current, upstream: upstream, ahead: counts.ahead, behind: counts.behind)
             }
             .sorted { lhs, rhs in
                 if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
@@ -82,10 +83,20 @@ public enum GitParsers {
             }
     }
 
-    public static func parseDivergence(_ output: String) -> (ahead: Int, behind: Int) {
-        let parts = output.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
-        guard parts.count >= 2 else { return (0, 0) }
-        return (parts[0], parts[1])
+    /// Parses an `%(upstream:track)` value such as `[ahead 1, behind 2]` or `[gone]`.
+    public static func parseTrack(_ track: String) -> (ahead: Int, behind: Int) {
+        guard track.hasPrefix("["), track.hasSuffix("]") else { return (0, 0) }
+        var ahead = 0
+        var behind = 0
+        for part in track.dropFirst().dropLast().split(separator: ",") {
+            let piece = part.trimmingCharacters(in: .whitespaces)
+            if piece.hasPrefix("ahead ") {
+                ahead = Int(piece.dropFirst("ahead ".count)) ?? 0
+            } else if piece.hasPrefix("behind ") {
+                behind = Int(piece.dropFirst("behind ".count)) ?? 0
+            }
+        }
+        return (ahead, behind)
     }
 
     public static func parseRemotes(_ output: String) -> [GitRemote] {

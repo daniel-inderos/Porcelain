@@ -114,6 +114,39 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(store.load().map(\.url.path), ["/tmp/one", "/tmp/two"])
     }
 
+    func testLargeCommitDiffDoesNotBlockOnPipeBuffer() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let service = GitService()
+        let repository = try await service.initializeRepository(at: directory)
+        try runGit(["config", "user.name", "Porcelain Tests"], in: repository.url)
+        try runGit(["config", "user.email", "tests@example.com"], in: repository.url)
+
+        // Well past the 64 KB pipe buffer that used to deadlock runGit.
+        let largeContent = (0..<20_000).map { "line \($0) of a reasonably long test fixture" }.joined(separator: "\n")
+        try largeContent.write(to: repository.url.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+
+        _ = try await service.stage(paths: ["big.txt"], in: repository.url)
+        _ = try await service.commit(summary: "Add big file", description: "", author: nil, amend: false, in: repository.url)
+
+        let commits = try await service.history(in: repository.url, limit: 10)
+        XCTAssertEqual(commits.count, 1)
+
+        let diff = try await service.diff(for: commits[0], file: nil, repositoryURL: repository.url)
+        XCTAssertTrue(diff.text.contains("+line 0 of a reasonably long test fixture"))
+        XCTAssertFalse(diff.isBinary)
+    }
+
+    private func runGit(_ arguments: [String], in directory: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + arguments
+        process.currentDirectoryURL = directory
+        try process.run()
+        process.waitUntilExit()
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PorcelainTests", isDirectory: true)

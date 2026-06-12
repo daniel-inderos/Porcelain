@@ -38,6 +38,34 @@ final class GitParsersTests: XCTestCase {
         XCTAssertEqual(status.branchDisplayName, "Detached abc1234")
     }
 
+    func testParseBranchesWithTrackingInfo() {
+        let output = [
+            "*\tmain\torigin/main\t[ahead 2, behind 1]",
+            " \tfeature/idea\torigin/feature/idea\t",
+            " \tlocal-only\t\t",
+            " \tstale\torigin/stale\t[gone]"
+        ].joined(separator: "\n")
+
+        let branches = GitParsers.parseBranches(output)
+
+        XCTAssertEqual(branches.map(\.name), ["main", "feature/idea", "local-only", "stale"])
+        XCTAssertEqual(branches.first?.isCurrent, true)
+        XCTAssertEqual(branches.first?.ahead, 2)
+        XCTAssertEqual(branches.first?.behind, 1)
+        XCTAssertEqual(branches.first?.upstream, "origin/main")
+        XCTAssertEqual(branches.first { $0.name == "feature/idea" }?.ahead, 0)
+        XCTAssertNil(branches.first { $0.name == "local-only" }?.upstream)
+        XCTAssertEqual(branches.first { $0.name == "stale" }?.ahead, 0)
+    }
+
+    func testParseTrack() {
+        XCTAssertEqual(GitParsers.parseTrack("[ahead 3, behind 7]").ahead, 3)
+        XCTAssertEqual(GitParsers.parseTrack("[ahead 3, behind 7]").behind, 7)
+        XCTAssertEqual(GitParsers.parseTrack("[behind 4]").behind, 4)
+        XCTAssertEqual(GitParsers.parseTrack("[gone]").ahead, 0)
+        XCTAssertEqual(GitParsers.parseTrack("").ahead, 0)
+    }
+
     func testParseRemotes() {
         let output = """
         origin\thttps://github.com/example/porcelain.git (fetch)

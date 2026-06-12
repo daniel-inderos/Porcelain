@@ -193,22 +193,11 @@ public actor GitService: GitServicing {
     }
 
     public func branches(in repositoryURL: URL) async throws -> [GitBranch] {
-        let result = try await runGit(["branch", "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)"], in: repositoryURL)
-        var divergences: [String: (Int, Int)] = [:]
-
-        for line in result.standardOutput.split(whereSeparator: \.isNewline).map(String.init) {
-            let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count >= 3, !parts[1].isEmpty, !parts[2].isEmpty else { continue }
-            let branch = parts[1]
-            let upstream = parts[2]
-            let divergenceResult = try await runGit(["rev-list", "--left-right", "--count", "\(branch)...\(upstream)"], in: repositoryURL, allowFailure: true)
-            divergences["\(branch)\u{1f}\(upstream)"] = GitParsers.parseDivergence(divergenceResult.standardOutput)
-        }
-
-        let divergenceSnapshot = divergences
-        return GitParsers.parseBranches(result.standardOutput) { branch, upstream in
-            divergenceSnapshot["\(branch)\u{1f}\(upstream)"] ?? (0, 0)
-        }
+        let result = try await runGit(
+            ["branch", "--format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)"],
+            in: repositoryURL
+        )
+        return GitParsers.parseBranches(result.standardOutput)
     }
 
     public func createBranch(named name: String, checkout: Bool, in repositoryURL: URL) async throws -> GitCommandResult {
@@ -339,12 +328,15 @@ public actor GitService: GitServicing {
                 throw GitError.gitMissing
             }
 
+            // Drain both pipes while the process runs; reading only after
+            // waitUntilExit deadlocks once output exceeds the pipe buffer.
+            let outputReader = PipeReader(pipe: outputPipe)
+            let errorReader = PipeReader(pipe: errorPipe)
+
             process.waitUntilExit()
 
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let standardOutput = String(data: outputData, encoding: .utf8) ?? ""
-            let standardError = String(data: errorData, encoding: .utf8) ?? ""
+            let standardOutput = String(data: outputReader.wait(), encoding: .utf8) ?? ""
+            let standardError = String(data: errorReader.wait(), encoding: .utf8) ?? ""
 
             return GitCommandResult(
                 command: command,
@@ -557,5 +549,25 @@ public actor GitService: GitServicing {
             return nil
         }
         return cleaned
+    }
+}
+
+/// Accumulates a pipe's output on a background queue so the producing process
+/// never blocks on a full pipe buffer.
+private final class PipeReader: @unchecked Sendable {
+    private let group = DispatchGroup()
+    private var data = Data()
+
+    init(pipe: Pipe) {
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            data = pipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+    }
+
+    func wait() -> Data {
+        group.wait()
+        return data
     }
 }
