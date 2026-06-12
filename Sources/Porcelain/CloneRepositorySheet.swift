@@ -18,22 +18,53 @@ struct CloneRepositorySheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
+            sheetHeader
+
+            Form {
+                repositorySection
+                destinationSection
+                statusSection
+            }
+            .formStyle(.grouped)
+
+            Divider()
+            buttonRow
+        }
+        .frame(width: 520)
+        .onDisappear {
+            appModel.cloneErrorMessage = nil
+        }
+    }
+
+    private var sheetHeader: some View {
+        HStack {
             Text("Clone Repository")
                 .font(.title2.weight(.semibold))
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+    }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Repository URL")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+    private var repositorySection: some View {
+        Section {
+            LabeledContent("Repository URL") {
                 TextField("https://github.com/owner/repo.git", text: $remoteURL)
                     .textFieldStyle(.roundedBorder)
             }
+        } header: {
+            Text("Repository")
+        } footer: {
+            Text("Enter the remote repository URL to clone.")
+                .foregroundStyle(.secondary)
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Destination Folder")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+    private var destinationSection: some View {
+        Section {
+            LabeledContent("Destination Folder") {
                 HStack {
                     Text(parentURL.path)
                         .lineLimit(1)
@@ -46,45 +77,58 @@ struct CloneRepositorySheet: View {
                     Button("Choose...") {
                         chooseDestination()
                     }
+                    .buttonStyle(.glass)
                 }
             }
+        } header: {
+            Text("Location")
+        } footer: {
+            Text("Porcelain clones into a folder inside this destination.")
+                .foregroundStyle(.secondary)
+        }
+    }
 
-            if let errorMessage = appModel.cloneErrorMessage {
+    @ViewBuilder
+    private var statusSection: some View {
+        if let errorMessage = appModel.cloneErrorMessage {
+            Section {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
 
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                Button {
-                    Task {
-                        if await appModel.cloneRepository(from: remoteURL, into: parentURL) {
-                            dismiss()
-                        }
-                    }
-                } label: {
-                    if appModel.isCloning {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text("Clone")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appModel.isCloning)
+    private var buttonRow: some View {
+        HStack {
+            Spacer()
+            Button("Cancel") {
+                dismiss()
             }
+            .keyboardShortcut(.cancelAction)
+
+            Button {
+                Task {
+                    if await appModel.cloneRepository(from: remoteURL, into: parentURL) {
+                        dismiss()
+                    }
+                }
+            } label: {
+                if appModel.isCloning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("Clone")
+                }
+            }
+            .buttonStyle(.glassProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appModel.isCloning)
         }
-        .padding(22)
-        .frame(width: 520)
-        .onDisappear {
-            appModel.cloneErrorMessage = nil
-        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
     }
 
     private func chooseDestination() {
