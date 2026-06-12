@@ -389,74 +389,92 @@ public actor GitService: GitServicing {
         // resolution goes through realpath(3) instead.
         let resolvedWorkingDirectory = workingDirectory.map(Self.realResolvedURL)
 
-        let result = try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = command
-            process.currentDirectoryURL = resolvedWorkingDirectory
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = command
+        process.currentDirectoryURL = resolvedWorkingDirectory
 
-            var processEnvironment = environment
-            processEnvironment["GIT_TERMINAL_PROMPT"] = "0"
-            processEnvironment["LC_ALL"] = "C"
-            if let resolvedWorkingDirectory {
-                processEnvironment["PWD"] = resolvedWorkingDirectory.path
-            } else {
-                processEnvironment.removeValue(forKey: "PWD")
+        var processEnvironment = environment
+        processEnvironment["GIT_TERMINAL_PROMPT"] = "0"
+        processEnvironment["LC_ALL"] = "C"
+        if let resolvedWorkingDirectory {
+            processEnvironment["PWD"] = resolvedWorkingDirectory.path
+        } else {
+            processEnvironment.removeValue(forKey: "PWD")
+        }
+        process.environment = processEnvironment
+
+        // Everything below is handler-driven: no thread blocks on the child
+        // or its pipes. Dedicated blocked reader threads starve on small-core
+        // machines — GCD can take seconds to spin up overcommit threads, and
+        // the readers then miss output that git wrote within milliseconds.
+        let eofGroup = DispatchGroup()
+        let exitWaiter = ExitWaiter()
+        process.terminationHandler = { finished in
+            exitWaiter.finished(status: finished.terminationStatus)
+        }
+
+        // Pipe setup and launch are serialized process-wide: concurrent
+        // pipe()/spawn pairs race on file-descriptor reuse in the shared
+        // descriptor table, which can cross-wire or orphan child output.
+        let (outputCollector, errorCollector) = try GitService.spawnQueue.sync {
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            let output = PipeCollector(handle: outputPipe.fileHandleForReading, eofGroup: eofGroup)
+            let error = PipeCollector(handle: errorPipe.fileHandleForReading, eofGroup: eofGroup)
+
+            do {
+                try process.run()
+            } catch {
+                throw GitError.gitMissing
             }
-            process.environment = processEnvironment
 
-            // Pipe setup and launch are serialized process-wide: concurrent
-            // pipe()/spawn pairs race on file-descriptor reuse in the shared
-            // descriptor table, which can cross-wire or orphan child output.
-            // Only the launch is serialized; waiting stays concurrent.
-            let (outputReader, errorReader) = try GitService.spawnQueue.sync {
-                let outputPipe = Pipe()
-                let errorPipe = Pipe()
-                process.standardOutput = outputPipe
-                process.standardError = errorPipe
+            return (output, error)
+        }
 
-                do {
-                    try process.run()
-                } catch {
-                    throw GitError.gitMissing
+        let exitCode = await exitWaiter.wait()
+
+        // Git can hand its pipes to a detached helper (auto maintenance,
+        // fsmonitor) that outlives the command, so EOF may never arrive even
+        // though the command finished; wait briefly for the pipes to drain
+        // instead of forever.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeOnce = ResumeOnce(continuation)
+            eofGroup.notify(queue: .global()) {
+                resumeOnce.resume()
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                resumeOnce.resume()
+            }
+        }
+
+        outputCollector.stop()
+        errorCollector.stop()
+
+        // TEMPORARY diagnostics for a CI-only failure; remove once solved.
+        if let debugLogPath = processEnvironment["PORCELAIN_GIT_DEBUG_LOG"] {
+            let line = "cmd=[\(command.joined(separator: " "))] cwd=\(resolvedWorkingDirectory?.path ?? "-") exit=\(exitCode) out[\(outputCollector.debugState)] err[\(errorCollector.debugState)]\n"
+            GitService.spawnQueue.sync {
+                if let handle = FileHandle(forWritingAtPath: debugLogPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(Data(line.utf8))
+                    try? handle.close()
+                } else {
+                    FileManager.default.createFile(atPath: debugLogPath, contents: Data(line.utf8))
                 }
-
-                // Drain both pipes while the process runs; reading only after
-                // waitUntilExit deadlocks once output exceeds the pipe buffer.
-                return (PipeReader(pipe: outputPipe), PipeReader(pipe: errorPipe))
             }
+        }
 
-            let spawnDate = Date()
-            process.waitUntilExit()
-            let exitDate = Date()
-
-            let standardOutput = String(data: outputReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
-            let standardError = String(data: errorReader.wait(gracePeriod: 2), encoding: .utf8) ?? ""
-
-            // TEMPORARY diagnostics for a CI-only failure; remove once solved.
-            if let debugLogPath = processEnvironment["PORCELAIN_GIT_DEBUG_LOG"] {
-                let runMs = Int(exitDate.timeIntervalSince(spawnDate) * 1000)
-                let drainMs = Int(Date().timeIntervalSince(exitDate) * 1000)
-                let line = "cmd=[\(command.joined(separator: " "))] cwd=\(resolvedWorkingDirectory?.path ?? "-") exit=\(process.terminationStatus) runMs=\(runMs) drainMs=\(drainMs) out[\(outputReader.debugState)] err[\(errorReader.debugState)]\n"
-                GitService.spawnQueue.sync {
-                    if let handle = FileHandle(forWritingAtPath: debugLogPath) {
-                        handle.seekToEndOfFile()
-                        handle.write(Data(line.utf8))
-                        try? handle.close()
-                    } else {
-                        FileManager.default.createFile(atPath: debugLogPath, contents: Data(line.utf8))
-                    }
-                }
-            }
-
-            return GitCommandResult(
-                command: command,
-                workingDirectory: workingDirectory,
-                exitCode: process.terminationStatus,
-                standardOutput: standardOutput,
-                standardError: standardError
-            )
-        }.value
+        let result = GitCommandResult(
+            command: command,
+            workingDirectory: workingDirectory,
+            exitCode: exitCode,
+            standardOutput: String(data: outputCollector.snapshot(), encoding: .utf8) ?? "",
+            standardError: String(data: errorCollector.snapshot(), encoding: .utf8) ?? ""
+        )
 
         if result.exitCode != 0 && !allowFailure {
             throw GitError.commandFailed(result)
@@ -682,54 +700,111 @@ public actor GitService: GitServicing {
     }
 }
 
-/// Accumulates a pipe's output on a background queue so the producing process
-/// never blocks on a full pipe buffer.
-private final class PipeReader: @unchecked Sendable {
-    private let group = DispatchGroup()
+/// Accumulates a pipe's output via its readability handler so the producing
+/// process never blocks on a full pipe buffer. Handler-driven on purpose:
+/// no thread is held hostage per pipe.
+private final class PipeCollector: @unchecked Sendable {
+    private let handle: FileHandle
+    private let eofGroup: DispatchGroup
     private let lock = NSLock()
     private var data = Data()
-    private var readerStarted = false
+    private var finished = false
     private var sawEOF = false
-    private(set) var graceTimedOut = false
 
-    init(pipe: Pipe) {
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            lock.lock()
-            readerStarted = true
-            lock.unlock()
-            let handle = pipe.fileHandleForReading
-            while true {
-                let chunk = handle.availableData
-                if chunk.isEmpty { break }
-                lock.lock()
-                data.append(chunk)
-                lock.unlock()
+    init(handle: FileHandle, eofGroup: DispatchGroup) {
+        self.handle = handle
+        self.eofGroup = eofGroup
+        eofGroup.enter()
+        handle.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard let self else { return }
+            self.lock.lock()
+            if chunk.isEmpty {
+                let alreadyFinished = self.finished
+                self.finished = true
+                self.sawEOF = true
+                self.lock.unlock()
+                handle.readabilityHandler = nil
+                if !alreadyFinished {
+                    self.eofGroup.leave()
+                }
+            } else {
+                self.data.append(chunk)
+                self.lock.unlock()
             }
-            lock.lock()
-            sawEOF = true
-            lock.unlock()
-            group.leave()
         }
     }
 
-    /// Git can hand its pipes to a detached helper (auto maintenance,
-    /// fsmonitor) that outlives the command, so EOF may never arrive even
-    /// though the command finished; once it has exited, wait briefly for
-    /// the pipe to drain instead of forever.
-    func wait(gracePeriod: TimeInterval) -> Data {
-        let outcome = group.wait(timeout: .now() + gracePeriod)
+    /// Detaches the handler once the caller stops caring (EOF or grace
+    /// timeout) and balances the group entry if EOF never arrived.
+    func stop() {
+        lock.lock()
+        let needsDetach = !finished
+        finished = true
+        lock.unlock()
+        if needsDetach {
+            handle.readabilityHandler = nil
+            eofGroup.leave()
+        }
+    }
+
+    func snapshot() -> Data {
         lock.lock()
         defer { lock.unlock() }
-        if outcome == .timedOut {
-            graceTimedOut = true
-        }
         return data
     }
 
     var debugState: String {
         lock.lock()
         defer { lock.unlock() }
-        return "started=\(readerStarted) eof=\(sawEOF) graceTimedOut=\(graceTimedOut) bytes=\(data.count)"
+        return "eof=\(sawEOF) bytes=\(data.count)"
+    }
+}
+
+/// Bridges Process.terminationHandler to async without losing a termination
+/// that fires before anyone awaits.
+private final class ExitWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int32?
+    private var continuation: CheckedContinuation<Int32, Never>?
+
+    func finished(status: Int32) {
+        lock.lock()
+        self.status = status
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: status)
+    }
+
+    func wait() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let status {
+                lock.unlock()
+                continuation.resume(returning: status)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+}
+
+/// Funnels multiple completion signals into a single continuation resume.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
     }
 }
