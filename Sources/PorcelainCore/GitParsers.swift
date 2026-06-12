@@ -64,6 +64,50 @@ public enum GitParsers {
         )
     }
 
+    public static func parseWorktrees(_ output: String) -> [GitWorktree] {
+        let entries = output.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var records: [[String]] = []
+        var currentRecord: [String] = []
+
+        for entry in entries {
+            if entry.isEmpty {
+                if !currentRecord.isEmpty {
+                    records.append(currentRecord)
+                    currentRecord = []
+                }
+            } else {
+                currentRecord.append(entry)
+            }
+        }
+
+        if !currentRecord.isEmpty {
+            records.append(currentRecord)
+        }
+
+        return records.enumerated().compactMap { index, record in
+            parseWorktreeRecord(record, isMain: index == 0)
+        }
+    }
+
+    public static func parseShortstat(_ output: String) -> (filesChanged: Int, insertions: Int, deletions: Int) {
+        var filesChanged = 0
+        var insertions = 0
+        var deletions = 0
+
+        for segment in output.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) {
+            guard let count = firstInteger(in: segment) else { continue }
+            if segment.contains("file changed") || segment.contains("files changed") {
+                filesChanged = count
+            } else if segment.contains("insertion") {
+                insertions = count
+            } else if segment.contains("deletion") {
+                deletions = count
+            }
+        }
+
+        return (filesChanged, insertions, deletions)
+    }
+
     /// Parses `git branch --format=%(HEAD)%09%(refname:short)%09%(upstream:short)%09%(upstream:track)`.
     public static func parseBranches(_ output: String) -> [GitBranch] {
         output
@@ -169,6 +213,59 @@ public enum GitParsers {
         return files.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
+    private static func parseWorktreeRecord(_ record: [String], isMain: Bool) -> GitWorktree? {
+        var path: URL?
+        var headHash: String?
+        var branch: String?
+        var isDetached = false
+        var isBare = false
+        var isLocked = false
+        var lockReason: String?
+        var isPrunable = false
+
+        for line in record {
+            if line.hasPrefix("worktree ") {
+                path = URL(fileURLWithPath: String(line.dropFirst("worktree ".count)))
+            } else if line.hasPrefix("HEAD ") {
+                let hash = String(line.dropFirst("HEAD ".count))
+                headHash = hash.isEmpty ? nil : hash
+            } else if line.hasPrefix("branch ") {
+                let ref = String(line.dropFirst("branch ".count))
+                let prefix = "refs/heads/"
+                if ref.hasPrefix(prefix) {
+                    branch = String(ref.dropFirst(prefix.count))
+                } else if !ref.isEmpty {
+                    branch = ref
+                }
+            } else if line == "detached" {
+                isDetached = true
+            } else if line == "bare" {
+                isBare = true
+            } else if line == "locked" {
+                isLocked = true
+            } else if line.hasPrefix("locked ") {
+                isLocked = true
+                let reason = String(line.dropFirst("locked ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                lockReason = reason.isEmpty ? nil : reason
+            } else if line == "prunable" || line.hasPrefix("prunable ") {
+                isPrunable = true
+            }
+        }
+
+        guard let path else { return nil }
+        return GitWorktree(
+            path: path,
+            headHash: headHash,
+            branch: branch,
+            isDetached: isDetached,
+            isBare: isBare,
+            isLocked: isLocked,
+            lockReason: lockReason,
+            isPrunable: isPrunable,
+            isMain: isMain
+        )
+    }
+
     private static func parseBranchHeader(_ header: String) -> (branchName: String?, upstreamName: String?, detachedHead: String?, ahead: Int, behind: Int) {
         if header.hasPrefix("HEAD (no branch)") {
             return (nil, nil, nil, 0, 0)
@@ -205,6 +302,10 @@ public enum GitParsers {
         }
 
         return (branchName, tracking.isEmpty ? nil : tracking, nil, 0, 0)
+    }
+
+    private static func firstInteger(in string: String) -> Int? {
+        string.split(whereSeparator: \.isWhitespace).first.flatMap { Int($0) }
     }
 
     private static func state(for code: Character, pairedWith other: Character) -> GitFileState {
@@ -249,4 +350,3 @@ public enum GitParsers {
         }
     }
 }
-

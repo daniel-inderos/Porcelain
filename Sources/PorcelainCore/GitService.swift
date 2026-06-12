@@ -7,6 +7,11 @@ public protocol GitServicing: Sendable {
     func cloneRepository(from remoteURL: String, to destinationURL: URL) async throws -> GitCommandResult
     func initializeRepository(at url: URL) async throws -> Repository
     func status(in repositoryURL: URL) async throws -> GitStatus
+    func worktrees(in repositoryURL: URL) async throws -> [GitWorktree]
+    func addWorktree(at destination: URL, branch: String, createBranch: Bool, in repositoryURL: URL) async throws -> GitCommandResult
+    func removeWorktree(at worktreePath: URL, force: Bool, in repositoryURL: URL) async throws -> GitCommandResult
+    func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult
+    func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary
     func identity(in repositoryURL: URL) async throws -> GitIdentity
     func diff(for change: GitChange, in repositoryURL: URL, staged: Bool) async throws -> DiffContent
     func stage(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult
@@ -93,6 +98,60 @@ public actor GitService: GitServicing {
     public func status(in repositoryURL: URL) async throws -> GitStatus {
         let result = try await runGit(["status", "--porcelain=v1", "-z", "--branch"], in: repositoryURL)
         return GitParsers.parseStatus(result.standardOutput)
+    }
+
+    public func worktrees(in repositoryURL: URL) async throws -> [GitWorktree] {
+        let result = try await runGit(["worktree", "list", "--porcelain", "-z"], in: repositoryURL)
+        return GitParsers.parseWorktrees(result.standardOutput)
+    }
+
+    public func addWorktree(at destination: URL, branch: String, createBranch: Bool, in repositoryURL: URL) async throws -> GitCommandResult {
+        let branch = try validateRefName(branch)
+        var arguments = ["worktree", "add"]
+        if createBranch {
+            arguments += ["-b", branch]
+        }
+        arguments.append(destination.path)
+        if !createBranch {
+            arguments.append(branch)
+        }
+        return try await runGit(arguments, in: repositoryURL)
+    }
+
+    public func removeWorktree(at worktreePath: URL, force: Bool, in repositoryURL: URL) async throws -> GitCommandResult {
+        var arguments = ["worktree", "remove"]
+        if force {
+            arguments.append("--force")
+        }
+        arguments.append(worktreePath.path)
+        return try await runGit(arguments, in: repositoryURL)
+    }
+
+    public func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult {
+        try await runGit(["worktree", "prune"], in: repositoryURL)
+    }
+
+    public func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary {
+        async let statusValue = status(in: worktreeURL)
+        async let shortstatValue = shortstat(in: worktreeURL)
+        async let commitsValue = history(in: worktreeURL, limit: 1)
+
+        let currentStatus = try await statusValue
+        let shortstat = try await shortstatValue
+        let commits = try await commitsValue
+
+        return WorktreeChangeSummary(
+            total: currentStatus.changes.count,
+            staged: currentStatus.changes.filter(\.isStaged).count,
+            untracked: currentStatus.changes.filter(\.isUntracked).count,
+            conflicted: currentStatus.conflicts.count,
+            insertions: shortstat.insertions,
+            deletions: shortstat.deletions,
+            ahead: currentStatus.ahead,
+            behind: currentStatus.behind,
+            branchName: currentStatus.branchName,
+            lastCommit: commits.first
+        )
     }
 
     public func identity(in repositoryURL: URL) async throws -> GitIdentity {
@@ -296,6 +355,16 @@ public actor GitService: GitServicing {
         }
         let result = try await runGit(arguments, in: repositoryURL)
         return diffContent(path: file?.path ?? commit.shortHash, text: result.standardOutput)
+    }
+
+    private func shortstat(in repositoryURL: URL) async throws -> (filesChanged: Int, insertions: Int, deletions: Int) {
+        let headProbe = try await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], in: repositoryURL, allowFailure: true)
+        guard headProbe.exitCode == 0 else {
+            return (0, 0, 0)
+        }
+
+        let result = try await runGit(["diff", "--shortstat", "HEAD"], in: repositoryURL)
+        return GitParsers.parseShortstat(result.standardOutput)
     }
 
     private func runGit(_ arguments: [String], in workingDirectory: URL?, allowFailure: Bool = false) async throws -> GitCommandResult {

@@ -10,6 +10,45 @@ public struct Repository: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+public struct GitWorktree: Identifiable, Hashable, Sendable {
+    public var id: String { path.path }
+    public let path: URL
+    public let headHash: String?
+    public let branch: String?
+    public let isDetached: Bool
+    public let isBare: Bool
+    public let isLocked: Bool
+    public let lockReason: String?
+    public let isPrunable: Bool
+    public let isMain: Bool
+
+    public init(
+        path: URL,
+        headHash: String?,
+        branch: String?,
+        isDetached: Bool,
+        isBare: Bool,
+        isLocked: Bool,
+        lockReason: String?,
+        isPrunable: Bool,
+        isMain: Bool
+    ) {
+        self.path = path
+        self.headHash = headHash
+        self.branch = branch
+        self.isDetached = isDetached
+        self.isBare = isBare
+        self.isLocked = isLocked
+        self.lockReason = lockReason
+        self.isPrunable = isPrunable
+        self.isMain = isMain
+    }
+
+    public var displayName: String {
+        branch ?? headHash.map { String($0.prefix(7)) } ?? (path.lastPathComponent.isEmpty ? path.path : path.lastPathComponent)
+    }
+}
+
 public enum GitFileState: String, Codable, CaseIterable, Sendable {
     case unmodified
     case modified
@@ -177,6 +216,45 @@ public struct GitCommit: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct WorktreeChangeSummary: Equatable, Sendable {
+    public let total: Int
+    public let staged: Int
+    public let untracked: Int
+    public let conflicted: Int
+    public let insertions: Int
+    public let deletions: Int
+    public let ahead: Int
+    public let behind: Int
+    public let branchName: String?
+    public let lastCommit: GitCommit?
+
+    public init(
+        total: Int,
+        staged: Int,
+        untracked: Int,
+        conflicted: Int,
+        insertions: Int,
+        deletions: Int,
+        ahead: Int,
+        behind: Int,
+        branchName: String?,
+        lastCommit: GitCommit?
+    ) {
+        self.total = total
+        self.staged = staged
+        self.untracked = untracked
+        self.conflicted = conflicted
+        self.insertions = insertions
+        self.deletions = deletions
+        self.ahead = ahead
+        self.behind = behind
+        self.branchName = branchName
+        self.lastCommit = lastCommit
+    }
+
+    public var isClean: Bool { total == 0 }
+}
+
 public struct GitCommitFile: Identifiable, Hashable, Sendable {
     public var id: String { "\(status.rawValue)|\(path)|\(oldPath ?? "")" }
     public let path: String
@@ -327,6 +405,15 @@ public enum GitError: Error, LocalizedError, Sendable {
         }
         if lowercased.contains("nothing to commit") {
             return "There is nothing staged to commit."
+        }
+        if lowercased.contains("is already checked out") {
+            return "That branch is already checked out in another worktree."
+        }
+        if lowercased.contains("contains modified or untracked files") || lowercased.contains("use --force") {
+            return "This worktree has local changes. Use force to remove it."
+        }
+        if lowercased.contains("already exists") && !lowercased.contains("branch named") {
+            return "That folder already exists and must be empty before adding a worktree."
         }
         if lowercased.contains("would be overwritten") {
             return "Git stopped to protect local changes."
