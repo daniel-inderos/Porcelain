@@ -25,6 +25,12 @@ struct WorktreeInfo: Identifiable, Sendable {
     let summary: WorktreeChangeSummary?
 }
 
+extension GitWorktree {
+    func isCurrent(for repositoryURL: URL) -> Bool {
+        path.standardizedFileURL.path == repositoryURL.standardizedFileURL.path
+    }
+}
+
 struct AppAlert: Identifiable {
     let id = UUID()
     let title: String

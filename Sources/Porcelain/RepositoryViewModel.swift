@@ -7,7 +7,12 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     let id = UUID()
     let repository: Repository
 
-    @Published var selectedTab: PorcelainTab = .changes
+    @Published var selectedTab: PorcelainTab = .changes {
+        didSet {
+            guard selectedTab == .worktrees, oldValue != .worktrees else { return }
+            refreshWorktrees()
+        }
+    }
     @Published var status = GitStatus(branchName: nil, upstreamName: nil, ahead: 0, behind: 0, detachedHead: nil, changes: [])
     @Published var identity = GitIdentity(name: nil, email: nil)
     @Published var branches: [GitBranch] = []
@@ -32,6 +37,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private let gitService: GitServicing
     private let keychainStore: KeychainStore
     private let fileWatcher = RepositoryFileWatcher()
+    private var isWorktreeRefreshInFlight = false
     var onSuccessfulOperation: (@MainActor () -> Void)?
 
     init(
@@ -88,7 +94,10 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     func refreshWorktrees() {
+        guard !isWorktreeRefreshInFlight else { return }
+        isWorktreeRefreshInFlight = true
         Task {
+            defer { isWorktreeRefreshInFlight = false }
             await loadWorktreeInfos()
         }
     }
@@ -506,10 +515,9 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             return infos
         }
 
-        let currentPath = currentRepositoryURL.standardizedFileURL.path
         return infos.sorted { lhs, rhs in
-            let lhsIsCurrent = lhs.worktree.path.standardizedFileURL.path == currentPath
-            let rhsIsCurrent = rhs.worktree.path.standardizedFileURL.path == currentPath
+            let lhsIsCurrent = lhs.worktree.isCurrent(for: currentRepositoryURL)
+            let rhsIsCurrent = rhs.worktree.isCurrent(for: currentRepositoryURL)
             if lhsIsCurrent != rhsIsCurrent {
                 return lhsIsCurrent
             }

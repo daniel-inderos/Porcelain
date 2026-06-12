@@ -154,7 +154,7 @@ struct WorktreesView: View {
     }
 
     private func isCurrent(_ info: WorktreeInfo) -> Bool {
-        info.worktree.path.standardizedFileURL.path == viewModel.repository.url.standardizedFileURL.path
+        info.worktree.isCurrent(for: viewModel.repository.url)
     }
 
     private var removalDialogIsPresented: Binding<Bool> {
@@ -181,8 +181,7 @@ struct WorktreesView: View {
     }
 }
 
-private struct WorktreeReviewSession: Identifiable {
-    let id = UUID()
+private struct WorktreeReviewSession {
     let info: WorktreeInfo
     let viewModel: RepositoryViewModel
 }
@@ -335,7 +334,7 @@ private struct WorktreeCard: View {
     }
 
     private var isCurrent: Bool {
-        info.worktree.path.standardizedFileURL.path == repositoryURL.standardizedFileURL.path
+        info.worktree.isCurrent(for: repositoryURL)
     }
 
     private var canRemove: Bool {
@@ -448,7 +447,7 @@ struct WorktreeBadgesView: View {
     }
 
     private var isCurrent: Bool {
-        info.worktree.path.standardizedFileURL.path == currentRepositoryURL.standardizedFileURL.path
+        info.worktree.isCurrent(for: currentRepositoryURL)
     }
 }
 

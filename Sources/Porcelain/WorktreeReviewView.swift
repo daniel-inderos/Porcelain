@@ -18,6 +18,9 @@ struct WorktreeReviewView: View {
         .onAppear {
             viewModel.start()
         }
+        .onExitCommand {
+            onBack()
+        }
         .overlay(alignment: .top) {
             activityOverlay
         }
@@ -49,9 +52,21 @@ struct WorktreeReviewView: View {
                     WorktreeBadgesView(info: info, currentRepositoryURL: parentRepositoryURL)
                 }
 
-                Text(statsText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(statsText)
+                        .foregroundStyle(.secondary)
+
+                    if isClean {
+                        Label {
+                            Text("All changes committed")
+                                .foregroundStyle(.secondary)
+                        } icon: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+                .font(.caption)
             }
 
             Spacer(minLength: 12)
@@ -88,6 +103,10 @@ struct WorktreeReviewView: View {
         let stagedCount = viewModel.stagedChanges.count
         let conflictCount = viewModel.status.conflicts.count
         return "\(changedCount) changed \(changedCount == 1 ? "file" : "files") · \(stagedCount) staged · \(conflictCount) \(conflictCount == 1 ? "conflict" : "conflicts")"
+    }
+
+    private var isClean: Bool {
+        viewModel.status.changes.isEmpty
     }
 
     @ViewBuilder
