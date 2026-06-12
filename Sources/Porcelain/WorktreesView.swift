@@ -8,11 +8,14 @@ struct WorktreesView: View {
     @State private var showingNewWorktreeSheet = false
     @State private var worktreePendingRemoval: WorktreeInfo?
     @State private var showingPruneConfirmation = false
+    @State private var reviewSession: WorktreeReviewSession?
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            if reviewSession == nil {
+                header
+                Divider()
+            }
             content
         }
         .sheet(isPresented: $showingNewWorktreeSheet) {
@@ -55,7 +58,7 @@ struct WorktreesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Worktrees")
                     .font(.headline)
-                Text("\(viewModel.worktreeInfos.count) working \(viewModel.worktreeInfos.count == 1 ? "state" : "states")")
+                Text(headerSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -81,7 +84,15 @@ struct WorktreesView: View {
 
     @ViewBuilder
     private var content: some View {
-        if showsEmptyState {
+        if let reviewSession {
+            WorktreeReviewView(
+                info: reviewSession.info,
+                parentRepositoryURL: viewModel.repository.url,
+                viewModel: reviewSession.viewModel,
+                openWorktree: openWorktree,
+                onBack: dismissReview
+            )
+        } else if showsEmptyState {
             WorktreesEmptyState {
                 showingNewWorktreeSheet = true
             }
@@ -94,6 +105,9 @@ struct WorktreesView: View {
                             repositoryURL: viewModel.repository.url,
                             viewModel: viewModel,
                             openWorktree: openWorktree,
+                            onReview: {
+                                beginReview(for: info)
+                            },
                             onRemove: {
                                 worktreePendingRemoval = info
                             }
@@ -105,12 +119,42 @@ struct WorktreesView: View {
         }
     }
 
+    private var headerSubtitle: String {
+        let count = viewModel.worktreeInfos.count
+        let base = "\(count) working \(count == 1 ? "state" : "states")"
+        let dirtyCount = viewModel.worktreeInfos.filter { $0.summary?.isClean == false }.count
+        guard dirtyCount > 0 else { return base }
+        return "\(base) · \(dirtyCount) with uncommitted changes"
+    }
+
     private var showsEmptyState: Bool {
         viewModel.worktreeInfos.count == 1 && viewModel.worktreeInfos.first?.worktree.isMain == true
     }
 
     private var prunableCount: Int {
         viewModel.worktreeInfos.filter(\.worktree.isPrunable).count
+    }
+
+    private func beginReview(for info: WorktreeInfo) {
+        guard !info.worktree.isBare, !info.worktree.isPrunable else { return }
+        if isCurrent(info) {
+            viewModel.selectedTab = .changes
+            return
+        }
+
+        let reviewViewModel = viewModel.makeWorktreeReviewViewModel(for: info.worktree) { [weak viewModel] in
+            viewModel?.refreshWorktrees()
+        }
+        reviewSession = WorktreeReviewSession(info: info, viewModel: reviewViewModel)
+    }
+
+    private func dismissReview() {
+        reviewSession = nil
+        viewModel.refreshWorktrees()
+    }
+
+    private func isCurrent(_ info: WorktreeInfo) -> Bool {
+        info.worktree.path.standardizedFileURL.path == viewModel.repository.url.standardizedFileURL.path
     }
 
     private var removalDialogIsPresented: Binding<Bool> {
@@ -137,11 +181,18 @@ struct WorktreesView: View {
     }
 }
 
+private struct WorktreeReviewSession: Identifiable {
+    let id = UUID()
+    let info: WorktreeInfo
+    let viewModel: RepositoryViewModel
+}
+
 private struct WorktreeCard: View {
     let info: WorktreeInfo
     let repositoryURL: URL
     @ObservedObject var viewModel: RepositoryViewModel
     let openWorktree: (URL) -> Void
+    let onReview: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -159,7 +210,7 @@ private struct WorktreeCard: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
-                        badges
+                        WorktreeBadgesView(info: info, currentRepositoryURL: repositoryURL)
                     }
 
                     Text(summaryText)
@@ -179,6 +230,8 @@ private struct WorktreeCard: View {
                 Spacer(minLength: 12)
 
                 HStack(spacing: 8) {
+                    reviewButton
+
                     if !isCurrent {
                         Button {
                             openWorktree(info.worktree.path)
@@ -212,23 +265,24 @@ private struct WorktreeCard: View {
     }
 
     @ViewBuilder
-    private var badges: some View {
-        HStack(spacing: 5) {
-            if isCurrent {
-                WorktreeBadge("Current", color: .accentColor)
-            }
-            if info.worktree.isMain {
-                WorktreeBadge("Main", color: .blue)
-            }
-            if info.worktree.isDetached {
-                WorktreeBadge("Detached", color: .orange)
-            }
-            if info.worktree.isLocked {
-                WorktreeBadge("Locked", color: .orange)
-                    .help(info.worktree.lockReason ?? "This worktree is locked.")
-            }
-            if info.worktree.isPrunable {
-                WorktreeBadge("Prunable", color: .red)
+    private var reviewButton: some View {
+        if showsReviewButton {
+            if isDirty {
+                Button {
+                    onReview()
+                } label: {
+                    Label("Review", systemImage: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Review this worktree")
+            } else {
+                Button {
+                    onReview()
+                } label: {
+                    Label("Review", systemImage: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+                .help("Review this worktree")
             }
         }
     }
@@ -257,6 +311,11 @@ private struct WorktreeCard: View {
 
     @ViewBuilder
     private var menuItems: some View {
+        if canReview && !showsReviewButton {
+            Button("Review") {
+                onReview()
+            }
+        }
         if !isCurrent {
             Button("Open in Porcelain") {
                 openWorktree(info.worktree.path)
@@ -281,6 +340,18 @@ private struct WorktreeCard: View {
 
     private var canRemove: Bool {
         !info.worktree.isMain && !info.worktree.isLocked
+    }
+
+    private var canReview: Bool {
+        !info.worktree.isBare && !info.worktree.isPrunable
+    }
+
+    private var isDirty: Bool {
+        info.summary?.isClean == false
+    }
+
+    private var showsReviewButton: Bool {
+        canReview && (isCurrent || isDirty)
     }
 
     private var iconName: String {
@@ -348,6 +419,36 @@ private struct WorktreeCard: View {
         case (let ahead, let behind):
             return "\(ahead) ahead, \(behind) behind"
         }
+    }
+}
+
+struct WorktreeBadgesView: View {
+    let info: WorktreeInfo
+    let currentRepositoryURL: URL
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if isCurrent {
+                WorktreeBadge("Current", color: .accentColor)
+            }
+            if info.worktree.isMain {
+                WorktreeBadge("Main", color: .blue)
+            }
+            if info.worktree.isDetached {
+                WorktreeBadge("Detached", color: .orange)
+            }
+            if info.worktree.isLocked {
+                WorktreeBadge("Locked", color: .orange)
+                    .help(info.worktree.lockReason ?? "This worktree is locked.")
+            }
+            if info.worktree.isPrunable {
+                WorktreeBadge("Prunable", color: .red)
+            }
+        }
+    }
+
+    private var isCurrent: Bool {
+        info.worktree.path.standardizedFileURL.path == currentRepositoryURL.standardizedFileURL.path
     }
 }
 

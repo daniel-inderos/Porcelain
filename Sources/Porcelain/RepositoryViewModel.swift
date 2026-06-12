@@ -32,6 +32,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private let gitService: GitServicing
     private let keychainStore: KeychainStore
     private let fileWatcher = RepositoryFileWatcher()
+    var onSuccessfulOperation: (@MainActor () -> Void)?
 
     init(
         repository: Repository,
@@ -86,6 +87,25 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         }
     }
 
+    func refreshWorktrees() {
+        Task {
+            await loadWorktreeInfos()
+        }
+    }
+
+    func makeWorktreeReviewViewModel(
+        for worktree: GitWorktree,
+        onSuccessfulOperation: (@MainActor () -> Void)? = nil
+    ) -> RepositoryViewModel {
+        let viewModel = RepositoryViewModel(
+            repository: Repository(url: worktree.path),
+            gitService: gitService,
+            keychainStore: keychainStore
+        )
+        viewModel.onSuccessfulOperation = onSuccessfulOperation
+        return viewModel
+    }
+
     func refreshStatusOnly() {
         Task {
             do {
@@ -129,6 +149,19 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             if selectedCommit == nil, let firstCommit = commits.first {
                 await selectCommit(firstCommit)
             }
+        }
+    }
+
+    private func loadWorktreeInfos() async {
+        do {
+            let worktrees = try await gitService.worktrees(in: repository.url)
+            worktreeInfos = await Self.worktreeInfos(
+                for: worktrees,
+                currentRepositoryURL: repository.url,
+                gitService: gitService
+            )
+        } catch {
+            alert = AppAlert(error: error)
         }
     }
 
@@ -417,6 +450,9 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 rawGitOutput = result.combinedOutput
                 await loadRepositoryState()
                 return result
+            }
+            if outcome.alert == nil {
+                onSuccessfulOperation?()
             }
             completion?(outcome.alert == nil, outcome.alert)
         }
