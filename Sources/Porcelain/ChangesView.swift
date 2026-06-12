@@ -24,23 +24,7 @@ private struct ChangeListView: View {
     @ObservedObject var viewModel: RepositoryViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Changes")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    viewModel.stageAll()
-                } label: {
-                    Label("Stage All", systemImage: "plus.square")
-                }
-                .disabled(viewModel.unstagedChanges.isEmpty)
-                .help("Stage all changes")
-            }
-            .padding(12)
-
-            Divider()
-
+        Group {
             if viewModel.status.isClean {
                 VStack(spacing: 10) {
                     Image(systemName: "checkmark.circle")
@@ -54,29 +38,75 @@ private struct ChangeListView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        ChangeSection(
-                            title: "Staged",
-                            count: viewModel.stagedChanges.count,
-                            changes: viewModel.stagedChanges,
-                            staged: true,
-                            viewModel: viewModel
-                        )
+                List(selection: selection) {
+                    ChangeSection(
+                        title: "Staged",
+                        count: viewModel.stagedChanges.count,
+                        changes: viewModel.stagedChanges,
+                        staged: true,
+                        viewModel: viewModel
+                    )
 
-                        ChangeSection(
-                            title: "Unstaged",
-                            count: viewModel.unstagedChanges.count,
-                            changes: viewModel.unstagedChanges,
-                            staged: false,
-                            viewModel: viewModel
-                        )
-                    }
-                    .padding(.vertical, 8)
+                    ChangeSection(
+                        title: "Unstaged",
+                        count: viewModel.unstagedChanges.count,
+                        changes: viewModel.unstagedChanges,
+                        staged: false,
+                        viewModel: viewModel
+                    )
                 }
+                .scrollEdgeEffectStyle(.soft, for: .top)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Changes")
+                .font(.headline)
+            Spacer()
+            Button {
+                viewModel.stageAll()
+            } label: {
+                Label("Stage All", systemImage: "plus.square")
+            }
+            .buttonStyle(.glass)
+            .disabled(viewModel.unstagedChanges.isEmpty)
+            .help("Stage all changes")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular, in: .rect(cornerRadius: 14))
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    private var selection: Binding<ChangeSelectionKey?> {
+        Binding {
+            guard let selectedChange = viewModel.selectedChange else { return nil }
+            return ChangeSelectionKey(
+                changeID: selectedChange.id,
+                staged: viewModel.selectedChangeIsStaged
+            )
+        } set: { key in
+            guard let key else { return }
+            let changes = key.staged ? viewModel.stagedChanges : viewModel.unstagedChanges
+            guard let change = changes.first(where: { $0.id == key.changeID }) else { return }
+            Task {
+                await viewModel.selectChange(change, staged: key.staged)
             }
         }
     }
+}
+
+private struct ChangeSelectionKey: Hashable {
+    let changeID: GitChange.ID
+    let staged: Bool
 }
 
 private struct ChangeSection: View {
@@ -96,16 +126,8 @@ private struct ChangeSection: View {
                     .padding(.vertical, 8)
             } else {
                 ForEach(changes) { change in
-                    ChangeRow(
-                        change: change,
-                        isSelected: viewModel.selectedChange?.id == change.id && viewModel.selectedChangeIsStaged == staged
-                    )
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        Task {
-                            await viewModel.selectChange(change, staged: staged)
-                        }
-                    }
+                    ChangeRow(change: change)
+                    .tag(ChangeSelectionKey(changeID: change.id, staged: staged))
                     .contextMenu {
                         if staged {
                             Button("Unstage") { viewModel.unstage(change) }
@@ -130,18 +152,7 @@ private struct ChangeSection: View {
                 }
             }
         } header: {
-            HStack {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("\(count)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.14))
-                    .clipShape(Capsule())
-                Spacer()
+            ChangeSectionHeader(title: title, count: count) {
                 if staged, count > 0 {
                     Button("Unstage All") {
                         viewModel.unstageAll()
@@ -150,16 +161,43 @@ private struct ChangeSection: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.bar)
         }
+    }
+}
+
+private struct ChangeSectionHeader<Accessory: View>: View {
+    let title: String
+    let count: Int
+    let accessory: Accessory
+
+    init(title: String, count: Int, @ViewBuilder accessory: () -> Accessory) {
+        self.title = title
+        self.count = count
+        self.accessory = accessory()
+    }
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("\(count)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.14))
+                .clipShape(Capsule())
+            Spacer()
+            accessory
+        }
+        .padding(.vertical, 4)
+        .textCase(nil)
     }
 }
 
 private struct ChangeRow: View {
     let change: GitChange
-    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -193,9 +231,7 @@ private struct ChangeRow: View {
                     .foregroundStyle(.orange)
             }
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
     }
 
     private var labelColor: Color {
@@ -228,8 +264,13 @@ private struct CommitPanelView: View {
             TextEditor(text: $viewModel.commitDescription)
                 .font(.body)
                 .frame(minHeight: 120)
+                .scrollContentBackground(.hidden)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(.quinary)
+                )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.secondary.opacity(0.18))
                 )
 
@@ -261,7 +302,7 @@ private struct CommitPanelView: View {
                 } label: {
                     Label(viewModel.amendCommit ? "Amend" : "Commit", systemImage: "checkmark.circle")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Commit staged changes (⌘↩)")
                 .disabled(viewModel.commitSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.stagedChanges.isEmpty)
@@ -282,7 +323,7 @@ private struct CommitPanelView: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(.background)
     }
 }
 
