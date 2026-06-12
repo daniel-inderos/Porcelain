@@ -253,6 +253,19 @@ public struct WorktreeChangeSummary: Equatable, Sendable {
     }
 
     public var isClean: Bool { total == 0 }
+
+    public var trackingSummary: String? {
+        switch (ahead, behind) {
+        case (0, 0):
+            nil
+        case (let ahead, 0):
+            "\(ahead) ahead"
+        case (0, let behind):
+            "\(behind) behind"
+        case (let ahead, let behind):
+            "\(ahead) ahead, \(behind) behind"
+        }
+    }
 }
 
 public struct GitCommitFile: Identifiable, Hashable, Sendable {

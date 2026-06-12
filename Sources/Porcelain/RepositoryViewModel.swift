@@ -38,7 +38,6 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private let keychainStore: KeychainStore
     private let fileWatcher = RepositoryFileWatcher()
     private var isWorktreeRefreshInFlight = false
-    var onSuccessfulOperation: (@MainActor () -> Void)?
 
     init(
         repository: Repository,
@@ -94,25 +93,17 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     func refreshWorktrees() {
-        guard !isWorktreeRefreshInFlight else { return }
-        isWorktreeRefreshInFlight = true
         Task {
-            defer { isWorktreeRefreshInFlight = false }
             await loadWorktreeInfos()
         }
     }
 
-    func makeWorktreeReviewViewModel(
-        for worktree: GitWorktree,
-        onSuccessfulOperation: (@MainActor () -> Void)? = nil
-    ) -> RepositoryViewModel {
-        let viewModel = RepositoryViewModel(
+    func makeWorktreeReviewViewModel(for worktree: GitWorktree) -> RepositoryViewModel {
+        RepositoryViewModel(
             repository: Repository(url: worktree.path),
             gitService: gitService,
             keychainStore: keychainStore
         )
-        viewModel.onSuccessfulOperation = onSuccessfulOperation
-        return viewModel
     }
 
     func refreshStatusOnly() {
@@ -136,18 +127,18 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             async let branchesValue = gitService.branches(in: repository.url)
             async let remotesValue = gitService.remotes(in: repository.url)
             async let commitsValue = gitService.history(in: repository.url, limit: 200)
-            async let worktreesValue = gitService.worktrees(in: repository.url)
 
             status = try await statusValue
             identity = try await identityValue
             branches = try await branchesValue
             remotes = try await remotesValue
             commits = try await commitsValue
-            worktreeInfos = await Self.worktreeInfos(
-                for: try await worktreesValue,
-                currentRepositoryURL: repository.url,
-                gitService: gitService
-            )
+
+            // Summaries cost several git invocations per worktree, so only
+            // load them while the Worktrees tab is showing them.
+            if selectedTab == .worktrees {
+                await loadWorktreeInfos()
+            }
 
             if selectedChange == nil, let first = unstagedChanges.first ?? stagedChanges.first {
                 await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
@@ -162,6 +153,9 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     private func loadWorktreeInfos() async {
+        guard !isWorktreeRefreshInFlight else { return }
+        isWorktreeRefreshInFlight = true
+        defer { isWorktreeRefreshInFlight = false }
         do {
             let worktrees = try await gitService.worktrees(in: repository.url)
             worktreeInfos = await Self.worktreeInfos(
@@ -459,9 +453,6 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 rawGitOutput = result.combinedOutput
                 await loadRepositoryState()
                 return result
-            }
-            if outcome.alert == nil {
-                onSuccessfulOperation?()
             }
             completion?(outcome.alert == nil, outcome.alert)
         }

@@ -22,7 +22,9 @@ struct WorktreeReviewView: View {
             onBack()
         }
         .overlay(alignment: .top) {
-            activityOverlay
+            if let message = viewModel.activityMessage {
+                ActivityOverlay(message: message)
+            }
         }
         .alert(item: $viewModel.alert) { alert in
             Alert(
@@ -107,23 +109,5 @@ struct WorktreeReviewView: View {
 
     private var isClean: Bool {
         viewModel.status.changes.isEmpty
-    }
-
-    @ViewBuilder
-    private var activityOverlay: some View {
-        if let message = viewModel.activityMessage {
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(message)
-                    .font(.callout)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.regularMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .shadow(radius: 10, y: 4)
-            .padding(.top, 10)
-        }
     }
 }

@@ -142,10 +142,7 @@ struct WorktreesView: View {
             return
         }
 
-        let reviewViewModel = viewModel.makeWorktreeReviewViewModel(for: info.worktree) { [weak viewModel] in
-            viewModel?.refreshWorktrees()
-        }
-        reviewSession = WorktreeReviewSession(info: info, viewModel: reviewViewModel)
+        reviewSession = WorktreeReviewSession(info: info, viewModel: viewModel.makeWorktreeReviewViewModel(for: info.worktree))
     }
 
     private func dismissReview() {
@@ -266,22 +263,17 @@ private struct WorktreeCard: View {
     @ViewBuilder
     private var reviewButton: some View {
         if showsReviewButton {
+            let button = Button {
+                onReview()
+            } label: {
+                Label("Review", systemImage: "doc.text.magnifyingglass")
+            }
+            .help("Review this worktree")
+
             if isDirty {
-                Button {
-                    onReview()
-                } label: {
-                    Label("Review", systemImage: "doc.text.magnifyingglass")
-                }
-                .buttonStyle(.borderedProminent)
-                .help("Review this worktree")
+                button.buttonStyle(.borderedProminent)
             } else {
-                Button {
-                    onReview()
-                } label: {
-                    Label("Review", systemImage: "doc.text.magnifyingglass")
-                }
-                .buttonStyle(.bordered)
-                .help("Review this worktree")
+                button.buttonStyle(.bordered)
             }
         }
     }
@@ -401,23 +393,10 @@ private struct WorktreeCard: View {
             }
         }
 
-        if let tracking = trackingSummary(for: summary) {
+        if let tracking = summary.trackingSummary {
             parts.append(tracking)
         }
         return parts.joined(separator: " · ")
-    }
-
-    private func trackingSummary(for summary: WorktreeChangeSummary) -> String? {
-        switch (summary.ahead, summary.behind) {
-        case (0, 0):
-            return nil
-        case (let ahead, 0):
-            return "\(ahead) ahead"
-        case (0, let behind):
-            return "\(behind) behind"
-        case (let ahead, let behind):
-            return "\(ahead) ahead, \(behind) behind"
-        }
     }
 }
 

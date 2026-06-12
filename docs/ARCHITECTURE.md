@@ -57,9 +57,9 @@ Views are intentionally thin. They render state, collect user input, confirm des
 
 `GitWorktree` represents one entry from `git worktree list --porcelain -z`. `WorktreeChangeSummary` is the card-level summary for a worktree: status counts, staged/untracked/conflicted counts, insertions and deletions from shortstat, ahead/behind state, branch name, and the latest commit when available.
 
-`RepositoryViewModel` loads worktree summaries concurrently with a task group. Each summary is isolated with `try?`, so a failed summary for one worktree leaves that worktree with an unavailable status instead of failing the whole list. Bare and prunable worktrees are listed without summary loading. The selected tab lives on `RepositoryViewModel`; entering the Worktrees tab triggers `refreshWorktrees()`, and overlapping standalone worktree refreshes are skipped.
+`RepositoryViewModel` loads worktree summaries concurrently with a task group. Each summary is isolated with `try?`, so a failed summary for one worktree leaves that worktree with an unavailable status instead of failing the whole list. Bare and prunable worktrees are listed without summary loading. Because each summary costs several Git invocations, summaries load only while the Worktrees tab is visible: entering the tab triggers a refresh, repository state loads include worktrees only on that tab, and overlapping refreshes are skipped.
 
-The in-place review flow uses a second `RepositoryViewModel` rooted at the selected worktree path. `WorktreesView` owns that review session lifecycle and embeds `WorktreeReviewView`, which reuses `ChangesView` against the worktree model. The review model's `onSuccessfulOperation` hook refreshes the parent worktree list after successful Git operations, so commits, staging, discards, and other review actions update the cards when the user returns.
+The in-place review flow uses a second `RepositoryViewModel` rooted at the selected worktree path. `WorktreesView` owns that review session lifecycle and embeds `WorktreeReviewView`, which reuses `ChangesView` against the worktree model. The parent worktree list refreshes when the user returns from a review, so commits, staging, and discards made during the review are reflected on the cards.
 
 ## Persistence
 
