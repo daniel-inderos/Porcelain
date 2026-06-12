@@ -3,6 +3,7 @@ import PorcelainCore
 
 struct RepositoryView: View {
     @ObservedObject var viewModel: RepositoryViewModel
+    var openWorktree: (URL) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +25,8 @@ struct RepositoryView: View {
                 switch viewModel.selectedTab {
                 case .changes:
                     ChangesView(viewModel: viewModel)
+                case .worktrees:
+                    WorktreesView(viewModel: viewModel, openWorktree: openWorktree)
                 case .history:
                     HistoryView(viewModel: viewModel)
                 case .branches:
@@ -160,4 +163,3 @@ private struct ConflictBanner: View {
         .background(Color.orange.opacity(0.12))
     }
 }
-

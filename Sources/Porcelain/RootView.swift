@@ -11,7 +11,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 230, ideal: 260, max: 320)
         } detail: {
             if let viewModel = appModel.repositoryViewModel {
-                RepositoryView(viewModel: viewModel)
+                RepositoryView(viewModel: viewModel, openWorktree: appModel.openWorktree(at:))
                     .id(viewModel.id)
             } else {
                 EmptyRepositoryView(appModel: appModel, showingCloneSheet: $showingCloneSheet)
@@ -191,4 +191,3 @@ private struct EmptyRepositoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
-

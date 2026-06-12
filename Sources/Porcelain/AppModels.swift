@@ -3,6 +3,7 @@ import PorcelainCore
 
 enum PorcelainTab: String, CaseIterable, Identifiable {
     case changes = "Changes"
+    case worktrees = "Worktrees"
     case history = "History"
     case branches = "Branches"
     case remotes = "Remotes"
@@ -16,6 +17,12 @@ enum DiffMode: String, CaseIterable, Identifiable {
     case sideBySide = "Side by Side"
 
     var id: String { rawValue }
+}
+
+struct WorktreeInfo: Identifiable, Sendable {
+    var id: String { worktree.id }
+    let worktree: GitWorktree
+    let summary: WorktreeChangeSummary?
 }
 
 struct AppAlert: Identifiable {
@@ -63,4 +70,3 @@ extension GitFileState {
         }
     }
 }
-

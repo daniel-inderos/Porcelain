@@ -12,6 +12,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     @Published var identity = GitIdentity(name: nil, email: nil)
     @Published var branches: [GitBranch] = []
     @Published var remotes: [GitRemote] = []
+    @Published var worktreeInfos: [WorktreeInfo] = []
     @Published var commits: [GitCommit] = []
     @Published var commitFiles: [GitCommitFile] = []
     @Published var selectedChange: GitChange?
@@ -106,12 +107,18 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             async let branchesValue = gitService.branches(in: repository.url)
             async let remotesValue = gitService.remotes(in: repository.url)
             async let commitsValue = gitService.history(in: repository.url, limit: 200)
+            async let worktreesValue = gitService.worktrees(in: repository.url)
 
             status = try await statusValue
             identity = try await identityValue
             branches = try await branchesValue
             remotes = try await remotesValue
             commits = try await commitsValue
+            worktreeInfos = await Self.worktreeInfos(
+                for: try await worktreesValue,
+                currentRepositoryURL: repository.url,
+                gitService: gitService
+            )
 
             if selectedChange == nil, let first = unstagedChanges.first ?? stagedChanges.first {
                 await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
@@ -262,6 +269,40 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         }
     }
 
+    func addWorktree(
+        branch: String,
+        createBranch: Bool,
+        at destination: URL,
+        completion: (@MainActor (Bool, AppAlert?) -> Void)? = nil
+    ) {
+        perform("Adding worktree", presentsAlert: completion == nil) {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            return try await self.gitService.addWorktree(
+                at: destination,
+                branch: branch,
+                createBranch: createBranch,
+                in: self.repository.url
+            )
+        } completion: { succeeded, alert in
+            completion?(succeeded, alert)
+        }
+    }
+
+    func removeWorktree(_ worktree: GitWorktree, force: Bool) {
+        perform("Removing worktree") {
+            try await self.gitService.removeWorktree(at: worktree.path, force: force, in: self.repository.url)
+        }
+    }
+
+    func pruneWorktrees() {
+        perform("Pruning worktrees") {
+            try await self.gitService.pruneWorktrees(in: self.repository.url)
+        }
+    }
+
     func addRemote(named name: String, url: String) {
         perform("Adding remote") {
             try await self.gitService.addRemote(named: name, url: url, in: self.repository.url)
@@ -286,6 +327,22 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
 
     func revealInFinder(_ change: GitChange) {
         NSWorkspace.shared.activateFileViewerSelecting([repository.url.appendingPathComponent(change.path)])
+    }
+
+    func revealWorktreeInFinder(_ worktree: GitWorktree) {
+        NSWorkspace.shared.activateFileViewerSelecting([worktree.path])
+    }
+
+    func openWorktreeInTerminal(_ worktree: GitWorktree) {
+        guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+            alert = AppAlert(title: "Terminal", message: "Terminal.app could not be found on this Mac.")
+            return
+        }
+        NSWorkspace.shared.open(
+            [worktree.path],
+            withApplicationAt: terminalURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
     }
 
     func copyPath(_ path: String) {
@@ -348,28 +405,93 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         }
     }
 
-    private func perform(_ message: String, operation: @escaping @MainActor () async throws -> GitCommandResult) {
+    private func perform(
+        _ message: String,
+        presentsAlert: Bool = true,
+        operation: @escaping @MainActor () async throws -> GitCommandResult,
+        completion: (@MainActor (Bool, AppAlert?) -> Void)? = nil
+    ) {
         Task {
-            await withActivity(message) {
+            let outcome = await withActivity(message, presentsAlert: presentsAlert) {
                 let result = try await operation()
                 rawGitOutput = result.combinedOutput
                 await loadRepositoryState()
+                return result
             }
+            completion?(outcome.alert == nil, outcome.alert)
         }
     }
 
-    private func withActivity(_ message: String, operation: () async throws -> Void) async {
+    @discardableResult
+    private func withActivity<Value>(
+        _ message: String,
+        presentsAlert: Bool = true,
+        operation: () async throws -> Value
+    ) async -> (value: Value?, alert: AppAlert?) {
         activityMessage = message
         defer { activityMessage = nil }
         do {
-            try await operation()
+            return (try await operation(), nil)
         } catch {
+            let appAlert: AppAlert
             if case GitError.commandFailed(let result) = error {
                 rawGitOutput = result.combinedOutput
-                alert = AppAlert(error: error, rawOutput: result.combinedOutput)
+                appAlert = AppAlert(error: error, rawOutput: result.combinedOutput)
             } else {
-                alert = AppAlert(error: error)
+                appAlert = AppAlert(error: error)
             }
+            if presentsAlert {
+                alert = appAlert
+            }
+            return (nil, appAlert)
+        }
+    }
+
+    private static func worktreeInfos(
+        for worktrees: [GitWorktree],
+        currentRepositoryURL: URL,
+        gitService: GitServicing
+    ) async -> [WorktreeInfo] {
+        let infos = await withTaskGroup(of: WorktreeInfo.self) { group in
+            for worktree in worktrees {
+                group.addTask {
+                    guard !worktree.isBare, !worktree.isPrunable else {
+                        return WorktreeInfo(worktree: worktree, summary: nil)
+                    }
+                    let summary = try? await gitService.changeSummary(forWorktreeAt: worktree.path)
+                    return WorktreeInfo(worktree: worktree, summary: summary)
+                }
+            }
+
+            var infos: [WorktreeInfo] = []
+            for await info in group {
+                infos.append(info)
+            }
+            return infos
+        }
+
+        let currentPath = currentRepositoryURL.standardizedFileURL.path
+        return infos.sorted { lhs, rhs in
+            let lhsIsCurrent = lhs.worktree.path.standardizedFileURL.path == currentPath
+            let rhsIsCurrent = rhs.worktree.path.standardizedFileURL.path == currentPath
+            if lhsIsCurrent != rhsIsCurrent {
+                return lhsIsCurrent
+            }
+
+            switch (lhs.summary?.lastCommit?.date, rhs.summary?.lastCommit?.date) {
+            case (let lhsDate?, let rhsDate?):
+                if lhsDate != rhsDate {
+                    return lhsDate > rhsDate
+                }
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                break
+            }
+
+            return lhs.worktree.path.path.localizedStandardCompare(rhs.worktree.path.path) == .orderedAscending
         }
     }
 
