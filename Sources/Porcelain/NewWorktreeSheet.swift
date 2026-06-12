@@ -25,54 +25,19 @@ struct NewWorktreeSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Worktree")
-                .font(.title2.weight(.semibold))
+        VStack(spacing: 0) {
+            sheetHeader
 
-            Picker("Mode", selection: $mode) {
-                ForEach(WorktreeBranchMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
+            Form {
+                branchSection
+                destinationSection
+                statusSection
             }
-            .pickerStyle(.segmented)
+            .formStyle(.grouped)
 
-            branchSection
-            destinationSection
-
-            if let validationMessage {
-                Label(validationMessage, systemImage: "info.circle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                Button {
-                    createWorktree()
-                } label: {
-                    if isCreating {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text("Create")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canCreate)
-            }
+            Divider()
+            buttonRow
         }
-        .padding(22)
         .frame(width: 540)
         .onAppear {
             resetExistingBranchIfNeeded()
@@ -94,21 +59,34 @@ struct NewWorktreeSheet: View {
     }
 
     @ViewBuilder
+    private var sheetHeader: some View {
+        HStack {
+            Text("New Worktree")
+                .font(.title2.weight(.semibold))
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
     private var branchSection: some View {
-        switch mode {
-        case .newBranch:
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Branch Name")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                TextField("feature/name", text: $newBranchName)
-                    .textFieldStyle(.roundedBorder)
+        Section {
+            Picker("Mode", selection: $mode) {
+                ForEach(WorktreeBranchMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
             }
-        case .existingBranch:
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Branch")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+            .pickerStyle(.segmented)
+
+            switch mode {
+            case .newBranch:
+                LabeledContent("Branch Name") {
+                    TextField("feature/name", text: $newBranchName)
+                        .textFieldStyle(.roundedBorder)
+                }
+            case .existingBranch:
                 Picker("Branch", selection: $existingBranchName) {
                     if availableExistingBranches.isEmpty {
                         Text("No available branches").tag("")
@@ -120,28 +98,80 @@ struct NewWorktreeSheet: View {
                 }
                 .disabled(availableExistingBranches.isEmpty)
             }
+        } header: {
+            Text("Branch")
+        } footer: {
+            if let validationMessage {
+                Label(validationMessage, systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
     private var destinationSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Destination Folder")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            HStack {
-                Text(destinationURL.standardizedFileURL.path)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(Color.secondary.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                Button("Choose...") {
-                    chooseDestination()
+        Section {
+            LabeledContent("Destination Folder") {
+                HStack {
+                    Text(destinationURL.standardizedFileURL.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.10))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    Button("Choose...") {
+                        chooseDestination()
+                    }
+                    .buttonStyle(.glass)
                 }
             }
+        } header: {
+            Text("Location")
+        } footer: {
+            Text("Porcelain creates the worktree at this folder.")
+                .foregroundStyle(.secondary)
         }
+    }
+
+    @ViewBuilder
+    private var statusSection: some View {
+        if let errorMessage {
+            Section {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var buttonRow: some View {
+        HStack {
+            Spacer()
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+
+            Button {
+                createWorktree()
+            } label: {
+                if isCreating {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("Create")
+                }
+            }
+            .buttonStyle(.glassProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!canCreate)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
     }
 
     private var availableExistingBranches: [GitBranch] {
