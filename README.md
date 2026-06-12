@@ -1,8 +1,14 @@
+<p align="center">
+  <img src="Assets/icon-256.png" width="128" alt="Porcelain app icon">
+</p>
+
 # Porcelain
 
 Porcelain is a lightweight native macOS Git client built with Swift and SwiftUI. It is intended as a fast, calm alternative to GitHub Desktop for everyday Git work: open or clone repositories, review changes, stage files, commit, switch branches, inspect history, manage remotes, and sync with upstreams.
 
 Porcelain is an MVP. It focuses on common workflows and keeps Git operations centralized through `GitService`, which runs the system `git` executable asynchronously.
+
+![Porcelain main window showing the Changes view with a diff and commit panel](Assets/screenshot.png)
 
 ## Requirements
 
@@ -69,6 +75,7 @@ Sources/
   PorcelainCore/   Git service, parsers, models, persistence, Keychain
 Tests/
   PorcelainCoreTests/
+Assets/            App icon and README images (regenerate with scripts/make_app_icon.sh)
 docs/
   ARCHITECTURE.md
   FEATURE_STATUS.md
