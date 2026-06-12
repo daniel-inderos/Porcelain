@@ -95,6 +95,64 @@ final class GitServiceTests: XCTestCase {
         XCTAssertTrue(diff.text.contains("+prompt-exports/export.txt"))
     }
 
+    func testWorktreeLifecycleAndChangeSummary() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let repositoryURL = directory.appendingPathComponent("repository", isDirectory: true)
+        let worktreeURL = directory.appendingPathComponent("feature-worktree", isDirectory: true)
+        let service = GitService()
+        let repository = try await service.initializeRepository(at: repositoryURL)
+
+        try runGit(["branch", "-M", "main"], in: repository.url)
+        try runGit(["config", "user.name", "Porcelain Tests"], in: repository.url)
+        try runGit(["config", "user.email", "tests@example.com"], in: repository.url)
+
+        let fileURL = repository.url.appendingPathComponent("hello.txt")
+        try "hello\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        _ = try await service.stage(paths: ["hello.txt"], in: repository.url)
+        _ = try await service.commit(summary: "Initial commit", description: "", author: nil, amend: false, in: repository.url)
+
+        _ = try await service.addWorktree(at: worktreeURL, branch: "feature/worktree", createBranch: true, in: repository.url)
+
+        let worktrees = try await service.worktrees(in: repository.url)
+        XCTAssertEqual(worktrees.count, 2)
+        XCTAssertEqual(worktrees[0].path.path, repository.url.path)
+        XCTAssertEqual(worktrees[0].branch, "main")
+        XCTAssertTrue(worktrees[0].isMain)
+
+        let resolvedWorktreePath = worktreeURL.resolvingSymlinksInPath().path
+        let linkedWorktree = try XCTUnwrap(worktrees.first { $0.path.resolvingSymlinksInPath().path == resolvedWorktreePath })
+        XCTAssertEqual(linkedWorktree.branch, "feature/worktree")
+        XCTAssertFalse(linkedWorktree.isMain)
+
+        let linkedFileURL = worktreeURL.appendingPathComponent("hello.txt")
+        try "hello\nfrom linked worktree\n".write(to: linkedFileURL, atomically: true, encoding: .utf8)
+
+        let summary = try await service.changeSummary(forWorktreeAt: worktreeURL)
+        XCTAssertFalse(summary.isClean)
+        XCTAssertEqual(summary.total, 1)
+        XCTAssertEqual(summary.staged, 0)
+        XCTAssertEqual(summary.untracked, 0)
+        XCTAssertEqual(summary.conflicted, 0)
+        XCTAssertEqual(summary.insertions, 1)
+        XCTAssertEqual(summary.deletions, 0)
+        XCTAssertEqual(summary.branchName, "feature/worktree")
+        XCTAssertEqual(summary.lastCommit?.subject, "Initial commit")
+
+        do {
+            _ = try await service.removeWorktree(at: worktreeURL, force: false, in: repository.url)
+            XCTFail("Expected dirty worktree removal to require force")
+        } catch let error as GitError {
+            XCTAssertEqual(error.errorDescription, "This worktree has local changes. Use force to remove it.")
+        }
+
+        _ = try await service.removeWorktree(at: worktreeURL, force: true, in: repository.url)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeURL.path))
+        let remainingWorktrees = try await service.worktrees(in: repository.url)
+        XCTAssertEqual(remainingWorktrees.count, 1)
+    }
+
     func testRecentRepositoryStoreDeduplicates() {
         let suiteName = "PorcelainTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

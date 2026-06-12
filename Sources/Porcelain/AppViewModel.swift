@@ -50,11 +50,18 @@ final class AppViewModel: ObservableObject {
     }
 
     func select(_ repository: Repository) {
-        selectedRepository = repository
-        let viewModel = RepositoryViewModel(repository: repository, gitService: gitService)
-        repositoryViewModel = viewModel
-        repositories = recentStore.remember(repository)
-        viewModel.start()
+        open(repository, remember: true)
+    }
+
+    func openWorktree(at url: URL) {
+        Task {
+            do {
+                let root = try await gitService.repositoryRoot(for: url)
+                open(Repository(url: root), remember: false)
+            } catch {
+                alert = AppAlert(error: error)
+            }
+        }
     }
 
     func forget(_ repository: Repository) {
@@ -143,5 +150,14 @@ final class AppViewModel: ObservableObject {
         let fallback = withoutGit.isEmpty ? "Repository" : withoutGit
         return fallback.replacingOccurrences(of: ":", with: "-")
     }
-}
 
+    private func open(_ repository: Repository, remember: Bool) {
+        selectedRepository = repository
+        let viewModel = RepositoryViewModel(repository: repository, gitService: gitService)
+        repositoryViewModel = viewModel
+        if remember {
+            repositories = recentStore.remember(repository)
+        }
+        viewModel.start()
+    }
+}

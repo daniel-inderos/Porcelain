@@ -38,6 +38,72 @@ final class GitParsersTests: XCTestCase {
         XCTAssertEqual(status.branchDisplayName, "Detached abc1234")
     }
 
+    func testParseWorktreesPorcelain() {
+        let output = [
+            "worktree /repo",
+            "HEAD 1111111111111111111111111111111111111111",
+            "branch refs/heads/main",
+            "",
+            "worktree /repo-feature",
+            "HEAD 2222222222222222222222222222222222222222",
+            "branch refs/heads/feature/work",
+            "locked indexing",
+            "",
+            "worktree /repo-detached",
+            "HEAD 3333333333333333333333333333333333333333",
+            "detached",
+            "prunable gitdir file points to non-existent location",
+            "",
+            "worktree /repo-locked",
+            "HEAD 4444444444444444444444444444444444444444",
+            "locked",
+            "",
+            "worktree /repo-bare",
+            "bare",
+            "unknown attribute"
+        ].joined(separator: "\0")
+
+        let worktrees = GitParsers.parseWorktrees(output)
+
+        XCTAssertEqual(worktrees.count, 5)
+        XCTAssertEqual(worktrees[0].path.path, "/repo")
+        XCTAssertEqual(worktrees[0].branch, "main")
+        XCTAssertTrue(worktrees[0].isMain)
+        XCTAssertEqual(worktrees[0].displayName, "main")
+        XCTAssertEqual(worktrees[1].branch, "feature/work")
+        XCTAssertTrue(worktrees[1].isLocked)
+        XCTAssertEqual(worktrees[1].lockReason, "indexing")
+        XCTAssertFalse(worktrees[1].isMain)
+        XCTAssertTrue(worktrees[2].isDetached)
+        XCTAssertTrue(worktrees[2].isPrunable)
+        XCTAssertEqual(worktrees[2].displayName, "3333333")
+        XCTAssertTrue(worktrees[3].isLocked)
+        XCTAssertNil(worktrees[3].lockReason)
+        XCTAssertTrue(worktrees[4].isBare)
+    }
+
+    func testParseShortstatVariants() {
+        var shortstat = GitParsers.parseShortstat("1 file changed, 2 insertions(+)\n")
+        XCTAssertEqual(shortstat.filesChanged, 1)
+        XCTAssertEqual(shortstat.insertions, 2)
+        XCTAssertEqual(shortstat.deletions, 0)
+
+        shortstat = GitParsers.parseShortstat("1 file changed, 3 deletions(-)\n")
+        XCTAssertEqual(shortstat.filesChanged, 1)
+        XCTAssertEqual(shortstat.insertions, 0)
+        XCTAssertEqual(shortstat.deletions, 3)
+
+        shortstat = GitParsers.parseShortstat("2 files changed, 10 insertions(+), 4 deletions(-)\n")
+        XCTAssertEqual(shortstat.filesChanged, 2)
+        XCTAssertEqual(shortstat.insertions, 10)
+        XCTAssertEqual(shortstat.deletions, 4)
+
+        shortstat = GitParsers.parseShortstat("")
+        XCTAssertEqual(shortstat.filesChanged, 0)
+        XCTAssertEqual(shortstat.insertions, 0)
+        XCTAssertEqual(shortstat.deletions, 0)
+    }
+
     func testParseBranchesWithTrackingInfo() {
         let output = [
             "*\tmain\torigin/main\t[ahead 2, behind 1]",

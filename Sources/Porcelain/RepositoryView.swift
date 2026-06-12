@@ -3,6 +3,7 @@ import PorcelainCore
 
 struct RepositoryView: View {
     @ObservedObject var viewModel: RepositoryViewModel
+    var openWorktree: (URL) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +25,8 @@ struct RepositoryView: View {
                 switch viewModel.selectedTab {
                 case .changes:
                     ChangesView(viewModel: viewModel)
+                case .worktrees:
+                    WorktreesView(viewModel: viewModel, openWorktree: openWorktree)
                 case .history:
                     HistoryView(viewModel: viewModel)
                 case .branches:
@@ -107,18 +110,7 @@ struct RepositoryView: View {
         }
         .overlay(alignment: .top) {
             if let message = viewModel.activityMessage {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(message)
-                        .font(.callout)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.regularMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .shadow(radius: 10, y: 4)
-                .padding(.top, 10)
+                ActivityOverlay(message: message)
             }
         }
         .alert(item: $viewModel.alert) { alert in
@@ -160,4 +152,3 @@ private struct ConflictBanner: View {
         .background(Color.orange.opacity(0.12))
     }
 }
-

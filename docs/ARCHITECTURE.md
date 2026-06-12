@@ -21,6 +21,11 @@ All Git subprocess work is centralized in `GitService`.
 - `discard(paths:in:)`
 - `commit(summary:description:author:amend:in:)`
 - `branches(in:)`
+- `worktrees(in:)`
+- `addWorktree(at:branch:createBranch:in:)`
+- `removeWorktree(at:force:in:)`
+- `pruneWorktrees(in:)`
+- `changeSummary(forWorktreeAt:)`
 - `fetch(in:)`, `pull(in:)`, `push(in:setUpstreamBranch:)`
 - `history(in:limit:)`
 - `remotes(in:)`
@@ -42,10 +47,19 @@ Internally, `GitService` launches `/usr/bin/env git` in a detached task, disable
 - diff content
 - commits and selected commit files
 - branches and remotes
+- worktree list and per-worktree summaries
 - commit form state
 - raw Git output and user-facing alerts
 
 Views are intentionally thin. They render state, collect user input, confirm destructive actions, and call view model methods.
+
+## Worktrees
+
+`GitWorktree` represents one entry from `git worktree list --porcelain -z`. `WorktreeChangeSummary` is the card-level summary for a worktree: status counts, staged/untracked/conflicted counts, insertions and deletions from shortstat, ahead/behind state, branch name, and the latest commit when available.
+
+`RepositoryViewModel` loads worktree summaries concurrently with a task group. Each summary is isolated with `try?`, so a failed summary for one worktree leaves that worktree with an unavailable status instead of failing the whole list. Bare and prunable worktrees are listed without summary loading. Because each summary costs several Git invocations, summaries load only while the Worktrees tab is visible: entering the tab triggers a refresh, repository state loads include worktrees only on that tab, and overlapping refreshes are skipped.
+
+The in-place review flow uses a second `RepositoryViewModel` rooted at the selected worktree path. `WorktreesView` owns that review session lifecycle and embeds `WorktreeReviewView`, which reuses `ChangesView` against the worktree model. The parent worktree list refreshes when the user returns from a review, so commits, staging, and discards made during the review are reflected on the cards.
 
 ## Persistence
 

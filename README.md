@@ -4,9 +4,9 @@
 
 # Porcelain
 
-Porcelain is a lightweight native macOS Git client built with Swift and SwiftUI. It is intended as a fast, calm alternative to GitHub Desktop for everyday Git work: open or clone repositories, review changes, stage files, commit, switch branches, inspect history, manage remotes, and sync with upstreams.
+Porcelain is a lightweight native macOS Git client built with Swift and SwiftUI, with worktree mission control for repositories that have parallel work in flight. It is intended as a fast, calm alternative to GitHub Desktop for everyday Git work: open or clone repositories, review changes, stage files, commit, switch branches, inspect history, manage remotes, and sync with upstreams.
 
-Porcelain is an MVP. It focuses on common workflows and keeps Git operations centralized through `GitService`, which runs the system `git` executable asynchronously.
+Porcelain is an MVP. It focuses on common workflows and on making multiple worktrees visible and reviewable from one window. Git operations are centralized through `GitService`, which runs the system `git` executable asynchronously.
 
 ![Porcelain main window showing the Changes view with a diff and commit panel](Assets/screenshot.png)
 
@@ -43,12 +43,19 @@ open .build/Porcelain.app
 
 You can also open the package in Xcode and run the `Porcelain` executable target.
 
+## Worktrees
+
+The Worktrees tab shows every worktree attached to the current repository, including the current checkout, branch or detached state, dirty-file counts, staged/untracked/conflicted counts, insertions and deletions, tracking state, and the latest commit when available.
+
+From the tab you can create worktrees, remove eligible worktrees, prune stale records, reveal or open a worktree in Terminal, and switch Porcelain to a different worktree. Dirty worktrees can be reviewed in place: Porcelain opens the same Changes workflow against that worktree path, so you can diff, stage, discard, commit, and then return to the list. This is meant for parallel branch work and for people running multiple Claude Code or Codex sessions in separate worktrees who want to review and land each one from a single window.
+
 ## MVP Features
 
 - First-launch empty state for opening, cloning, or initializing a repository
 - Recent repository sidebar with search and local persistence
 - Toolbar with current repository, branch picker, refresh, fetch, pull, push, and settings
 - Changes view with staged, unstaged, untracked, renamed, deleted, binary, large, and conflicted file handling
+- Worktrees tab with create, remove, prune, per-worktree summaries, context switching, and in-place review
 - Unified and side-by-side diff rendering
 - Stage, unstage, discard with confirmation, and commit with validation
 - Branch list with checkout, create, rename, safe delete, merge, and ahead/behind state

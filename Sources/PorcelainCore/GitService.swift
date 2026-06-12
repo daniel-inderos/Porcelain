@@ -7,6 +7,11 @@ public protocol GitServicing: Sendable {
     func cloneRepository(from remoteURL: String, to destinationURL: URL) async throws -> GitCommandResult
     func initializeRepository(at url: URL) async throws -> Repository
     func status(in repositoryURL: URL) async throws -> GitStatus
+    func worktrees(in repositoryURL: URL) async throws -> [GitWorktree]
+    func addWorktree(at destination: URL, branch: String, createBranch: Bool, in repositoryURL: URL) async throws -> GitCommandResult
+    func removeWorktree(at worktreePath: URL, force: Bool, in repositoryURL: URL) async throws -> GitCommandResult
+    func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult
+    func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary
     func identity(in repositoryURL: URL) async throws -> GitIdentity
     func diff(for change: GitChange, in repositoryURL: URL, staged: Bool) async throws -> DiffContent
     func stage(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult
@@ -33,6 +38,8 @@ public protocol GitServicing: Sendable {
 
 public actor GitService: GitServicing {
     public static let shared = GitService()
+
+    static let spawnQueue = DispatchQueue(label: "app.porcelain.git-spawn")
 
     private let executableURL: URL
     private let fileManager: FileManager
@@ -93,6 +100,62 @@ public actor GitService: GitServicing {
     public func status(in repositoryURL: URL) async throws -> GitStatus {
         let result = try await runGit(["status", "--porcelain=v1", "-z", "--branch"], in: repositoryURL)
         return GitParsers.parseStatus(result.standardOutput)
+    }
+
+    public func worktrees(in repositoryURL: URL) async throws -> [GitWorktree] {
+        let result = try await runGit(["worktree", "list", "--porcelain", "-z"], in: repositoryURL)
+        return GitParsers.parseWorktrees(result.standardOutput)
+    }
+
+    public func addWorktree(at destination: URL, branch: String, createBranch: Bool, in repositoryURL: URL) async throws -> GitCommandResult {
+        let branch = try validateRefName(branch)
+        var arguments = ["worktree", "add"]
+        if createBranch {
+            arguments += ["-b", branch]
+        }
+        // Record the real path; a symlinked destination (e.g. under /tmp)
+        // confuses later git commands run inside the worktree.
+        arguments.append(Self.realResolvedURL(destination).path)
+        if !createBranch {
+            arguments.append(branch)
+        }
+        return try await runGit(arguments, in: repositoryURL)
+    }
+
+    public func removeWorktree(at worktreePath: URL, force: Bool, in repositoryURL: URL) async throws -> GitCommandResult {
+        var arguments = ["worktree", "remove"]
+        if force {
+            arguments.append("--force")
+        }
+        arguments.append(worktreePath.path)
+        return try await runGit(arguments, in: repositoryURL)
+    }
+
+    public func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult {
+        try await runGit(["worktree", "prune"], in: repositoryURL)
+    }
+
+    public func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary {
+        async let statusValue = status(in: worktreeURL)
+        async let shortstatValue = shortstat(in: worktreeURL)
+        async let commitsValue = history(in: worktreeURL, limit: 1)
+
+        let currentStatus = try await statusValue
+        let shortstat = try await shortstatValue
+        let commits = try await commitsValue
+
+        return WorktreeChangeSummary(
+            total: currentStatus.changes.count,
+            staged: currentStatus.changes.filter(\.isStaged).count,
+            untracked: currentStatus.changes.filter(\.isUntracked).count,
+            conflicted: currentStatus.conflicts.count,
+            insertions: shortstat.insertions,
+            deletions: shortstat.deletions,
+            ahead: currentStatus.ahead,
+            behind: currentStatus.behind,
+            branchName: currentStatus.branchName,
+            lastCommit: commits.first
+        )
     }
 
     public func identity(in repositoryURL: URL) async throws -> GitIdentity {
@@ -298,6 +361,16 @@ public actor GitService: GitServicing {
         return diffContent(path: file?.path ?? commit.shortHash, text: result.standardOutput)
     }
 
+    private func shortstat(in repositoryURL: URL) async throws -> (filesChanged: Int, insertions: Int, deletions: Int) {
+        let headProbe = try await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], in: repositoryURL, allowFailure: true)
+        guard headProbe.exitCode == 0 else {
+            return (0, 0, 0)
+        }
+
+        let result = try await runGit(["diff", "--shortstat", "HEAD"], in: repositoryURL)
+        return GitParsers.parseShortstat(result.standardOutput)
+    }
+
     private func runGit(_ arguments: [String], in workingDirectory: URL?, allowFailure: Bool = false) async throws -> GitCommandResult {
         let executableURL = executableURL
         let command = ["git"] + arguments
@@ -308,21 +381,50 @@ public actor GitService: GitServicing {
             environment["PORCELAIN_GITHUB_TOKEN"] = token
         }
 
-        let result = try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = command
-            process.currentDirectoryURL = workingDirectory
+        // Git resolves where it is partly from the recorded worktree path and
+        // the PWD variable; a symlinked working directory (such as anything
+        // under /tmp or /var/folders on macOS) or a stale inherited PWD can
+        // make commands inside a linked worktree silently act on nothing.
+        // URL.resolvingSymlinksInPath() leaves /var and /tmp untouched, so
+        // resolution goes through realpath(3) instead.
+        let resolvedWorkingDirectory = workingDirectory.map(Self.realResolvedURL)
 
-            var processEnvironment = environment
-            processEnvironment["GIT_TERMINAL_PROMPT"] = "0"
-            processEnvironment["LC_ALL"] = "C"
-            process.environment = processEnvironment
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = command
+        process.currentDirectoryURL = resolvedWorkingDirectory
 
+        var processEnvironment = environment
+        processEnvironment["GIT_TERMINAL_PROMPT"] = "0"
+        processEnvironment["LC_ALL"] = "C"
+        if let resolvedWorkingDirectory {
+            processEnvironment["PWD"] = resolvedWorkingDirectory.path
+        } else {
+            processEnvironment.removeValue(forKey: "PWD")
+        }
+        process.environment = processEnvironment
+
+        // Everything below is handler-driven: no thread blocks on the child
+        // or its pipes. Dedicated blocked reader threads starve on small-core
+        // machines — GCD can take seconds to spin up overcommit threads, and
+        // the readers then miss output that git wrote within milliseconds.
+        let eofGroup = DispatchGroup()
+        let exitWaiter = ExitWaiter()
+        process.terminationHandler = { finished in
+            exitWaiter.finished(status: finished.terminationStatus)
+        }
+
+        // Pipe setup and launch are serialized process-wide: concurrent
+        // pipe()/spawn pairs race on file-descriptor reuse in the shared
+        // descriptor table, which can cross-wire or orphan child output.
+        let (outputCollector, errorCollector) = try GitService.spawnQueue.sync {
             let outputPipe = Pipe()
             let errorPipe = Pipe()
             process.standardOutput = outputPipe
             process.standardError = errorPipe
+
+            let output = PipeCollector(handle: outputPipe.fileHandleForReading, eofGroup: eofGroup)
+            let error = PipeCollector(handle: errorPipe.fileHandleForReading, eofGroup: eofGroup)
 
             do {
                 try process.run()
@@ -330,29 +432,59 @@ public actor GitService: GitServicing {
                 throw GitError.gitMissing
             }
 
-            // Drain both pipes while the process runs; reading only after
-            // waitUntilExit deadlocks once output exceeds the pipe buffer.
-            let outputReader = PipeReader(pipe: outputPipe)
-            let errorReader = PipeReader(pipe: errorPipe)
+            return (output, error)
+        }
 
-            process.waitUntilExit()
+        let exitCode = await exitWaiter.wait()
 
-            let standardOutput = String(data: outputReader.wait(), encoding: .utf8) ?? ""
-            let standardError = String(data: errorReader.wait(), encoding: .utf8) ?? ""
+        // Git can hand its pipes to a detached helper (auto maintenance,
+        // fsmonitor) that outlives the command, so EOF may never arrive even
+        // though the command finished; wait briefly for the pipes to drain
+        // instead of forever.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeOnce = ResumeOnce(continuation)
+            eofGroup.notify(queue: .global()) {
+                resumeOnce.resume()
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                resumeOnce.resume()
+            }
+        }
 
-            return GitCommandResult(
-                command: command,
-                workingDirectory: workingDirectory,
-                exitCode: process.terminationStatus,
-                standardOutput: standardOutput,
-                standardError: standardError
-            )
-        }.value
+        outputCollector.stop()
+        errorCollector.stop()
+
+        let result = GitCommandResult(
+            command: command,
+            workingDirectory: workingDirectory,
+            exitCode: exitCode,
+            standardOutput: String(data: outputCollector.snapshot(), encoding: .utf8) ?? "",
+            standardError: String(data: errorCollector.snapshot(), encoding: .utf8) ?? ""
+        )
 
         if result.exitCode != 0 && !allowFailure {
             throw GitError.commandFailed(result)
         }
         return result
+    }
+
+    /// realpath(3)-based resolution; URL.resolvingSymlinksInPath() skips
+    /// /var and /tmp on macOS. Falls back to resolving the parent when the
+    /// path itself does not exist yet (e.g. a new worktree destination).
+    nonisolated private static func realResolvedURL(_ url: URL) -> URL {
+        func resolve(_ path: String) -> String? {
+            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard realpath(path, &buffer) != nil else { return nil }
+            return String(decoding: buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+        if let resolved = resolve(url.path) {
+            return URL(fileURLWithPath: resolved, isDirectory: true)
+        }
+        if let parent = resolve(url.deletingLastPathComponent().path) {
+            return URL(fileURLWithPath: parent, isDirectory: true)
+                .appendingPathComponent(url.lastPathComponent, isDirectory: true)
+        }
+        return url
     }
 
     private func ensureAskPassScript() throws -> URL {
@@ -554,22 +686,103 @@ public actor GitService: GitServicing {
     }
 }
 
-/// Accumulates a pipe's output on a background queue so the producing process
-/// never blocks on a full pipe buffer.
-private final class PipeReader: @unchecked Sendable {
-    private let group = DispatchGroup()
+/// Accumulates a pipe's output via its readability handler so the producing
+/// process never blocks on a full pipe buffer. Handler-driven on purpose:
+/// no thread is held hostage per pipe.
+private final class PipeCollector: @unchecked Sendable {
+    private let handle: FileHandle
+    private let eofGroup: DispatchGroup
+    private let lock = NSLock()
     private var data = Data()
+    private var finished = false
 
-    init(pipe: Pipe) {
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
-            data = pipe.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
+    init(handle: FileHandle, eofGroup: DispatchGroup) {
+        self.handle = handle
+        self.eofGroup = eofGroup
+        eofGroup.enter()
+        handle.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard let self else { return }
+            self.lock.lock()
+            if chunk.isEmpty {
+                let alreadyFinished = self.finished
+                self.finished = true
+                self.lock.unlock()
+                handle.readabilityHandler = nil
+                if !alreadyFinished {
+                    self.eofGroup.leave()
+                }
+            } else {
+                self.data.append(chunk)
+                self.lock.unlock()
+            }
         }
     }
 
-    func wait() -> Data {
-        group.wait()
+    /// Detaches the handler once the caller stops caring (EOF or grace
+    /// timeout) and balances the group entry if EOF never arrived.
+    func stop() {
+        lock.lock()
+        let needsDetach = !finished
+        finished = true
+        lock.unlock()
+        if needsDetach {
+            handle.readabilityHandler = nil
+            eofGroup.leave()
+        }
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
         return data
+    }
+}
+
+/// Bridges Process.terminationHandler to async without losing a termination
+/// that fires before anyone awaits.
+private final class ExitWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var status: Int32?
+    private var continuation: CheckedContinuation<Int32, Never>?
+
+    func finished(status: Int32) {
+        lock.lock()
+        self.status = status
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: status)
+    }
+
+    func wait() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let status {
+                lock.unlock()
+                continuation.resume(returning: status)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+}
+
+/// Funnels multiple completion signals into a single continuation resume.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
     }
 }
