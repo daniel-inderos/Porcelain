@@ -454,20 +454,6 @@ public actor GitService: GitServicing {
         outputCollector.stop()
         errorCollector.stop()
 
-        // TEMPORARY diagnostics for a CI-only failure; remove once solved.
-        if let debugLogPath = processEnvironment["PORCELAIN_GIT_DEBUG_LOG"] {
-            let line = "cmd=[\(command.joined(separator: " "))] cwd=\(resolvedWorkingDirectory?.path ?? "-") exit=\(exitCode) out[\(outputCollector.debugState)] err[\(errorCollector.debugState)]\n"
-            GitService.spawnQueue.sync {
-                if let handle = FileHandle(forWritingAtPath: debugLogPath) {
-                    handle.seekToEndOfFile()
-                    handle.write(Data(line.utf8))
-                    try? handle.close()
-                } else {
-                    FileManager.default.createFile(atPath: debugLogPath, contents: Data(line.utf8))
-                }
-            }
-        }
-
         let result = GitCommandResult(
             command: command,
             workingDirectory: workingDirectory,
@@ -709,7 +695,6 @@ private final class PipeCollector: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
     private var finished = false
-    private var sawEOF = false
 
     init(handle: FileHandle, eofGroup: DispatchGroup) {
         self.handle = handle
@@ -722,7 +707,6 @@ private final class PipeCollector: @unchecked Sendable {
             if chunk.isEmpty {
                 let alreadyFinished = self.finished
                 self.finished = true
-                self.sawEOF = true
                 self.lock.unlock()
                 handle.readabilityHandler = nil
                 if !alreadyFinished {
@@ -752,12 +736,6 @@ private final class PipeCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return data
-    }
-
-    var debugState: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return "eof=\(sawEOF) bytes=\(data.count)"
     }
 }
 

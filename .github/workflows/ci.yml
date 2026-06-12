@@ -15,16 +15,6 @@ jobs:
       - name: Build
         run: swift build
         timeout-minutes: 15
-      # TEMPORARY diagnostics for the flaky worktree test; remove once solved.
-      - name: Worktree test with pipe diagnostics
-        timeout-minutes: 5
-        continue-on-error: true
-        env:
-          PORCELAIN_GIT_DEBUG_LOG: /tmp/porcelain-git-debug.log
-        run: swift test --filter testWorktreeLifecycleAndChangeSummary 2>&1 || true
-      - name: Dump pipe diagnostics
-        if: always()
-        run: cat /tmp/porcelain-git-debug.log 2>/dev/null || echo "no debug log written"
       - name: Test
         run: swift test --parallel
         timeout-minutes: 8
