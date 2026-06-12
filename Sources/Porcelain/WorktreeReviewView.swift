@@ -6,33 +6,36 @@ struct WorktreeReviewView: View {
     let parentRepositoryURL: URL
     @ObservedObject var viewModel: RepositoryViewModel
     let openWorktree: (URL) -> Void
+    let glassNamespace: Namespace.ID
     let onBack: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ChangesView(viewModel: viewModel)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            viewModel.start()
-        }
-        .onExitCommand {
-            onBack()
-        }
-        .overlay(alignment: .top) {
-            if let message = viewModel.activityMessage {
-                ActivityOverlay(message: message)
+        ChangesView(viewModel: viewModel)
+            .safeAreaInset(edge: .top) {
+                header
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
             }
-        }
-        .alert(item: $viewModel.alert) { alert in
-            Alert(
-                title: Text(alert.title),
-                message: Text(alert.message),
-                dismissButton: .default(Text("OK"))
-            )
-        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                viewModel.start()
+            }
+            .onExitCommand {
+                onBack()
+            }
+            .overlay(alignment: .top) {
+                if let message = viewModel.activityMessage {
+                    ActivityOverlay(message: message)
+                }
+            }
+            .alert(item: $viewModel.alert) { alert in
+                Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
     }
 
     private var header: some View {
@@ -97,7 +100,9 @@ struct WorktreeReviewView: View {
             }
         }
         .padding(12)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .glassEffectID(info.id, in: glassNamespace)
     }
 
     private var statsText: String {
