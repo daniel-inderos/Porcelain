@@ -12,39 +12,21 @@ jobs:
       - uses: actions/checkout@v6
       - name: Swift version
         run: swift --version
-      # TEMPORARY diagnostic for the hanging worktree test: run the same git
-      # sequence with command substitution (which, like the app, waits for
-      # pipe EOF) and report which command keeps the pipe open. Remove once
-      # the hang is understood.
-      - name: Diagnose git pipe EOF behavior
-        timeout-minutes: 3
-        run: |
-          set -x
-          git --version
-          d=$(mktemp -d)
-          cd "$d"
-          git init repo
-          cd repo
-          git branch -M main || true
-          git config user.name "CI Probe"
-          git config user.email "ci@example.com"
-          echo hello > hello.txt
-          out=$(git add hello.txt 2>&1); echo "add done"
-          out=$(git commit -m "Initial commit" 2>&1); echo "commit done"
-          out=$(git worktree add -b feature/worktree ../wt 2>&1); echo "worktree add done"
-          out=$(git worktree list --porcelain -z 2>&1 | tr '\0' '\n'); echo "worktree list done"
-          cd ../wt
-          printf 'hello\nfrom linked worktree\n' > hello.txt
-          out=$(git status --porcelain=v1 -z --branch 2>&1 | tr '\0' '\n'); echo "status done"
-          out=$(git rev-parse --verify --quiet HEAD 2>&1); echo "rev-parse done"
-          out=$(git diff --shortstat HEAD 2>&1); echo "shortstat done"
-          out=$(git log --date=iso-strict --max-count=1 2>&1); echo "log done"
-          cd ../repo
-          out=$(git worktree remove --force ../wt 2>&1); echo "worktree remove done"
-          ps ax | grep -i 'git' | grep -v grep || echo "no lingering git processes"
       - name: Build
         run: swift build
         timeout-minutes: 15
+      # TEMPORARY diagnostic: trace every git invocation the worktree test
+      # makes (argv, cwd, exit code, child spawns). Remove once the CI-only
+      # failure is understood.
+      - name: Worktree test with git trace
+        timeout-minutes: 5
+        continue-on-error: true
+        env:
+          GIT_TRACE2: /tmp/git-trace2.log
+        run: swift test --filter testWorktreeLifecycleAndChangeSummary 2>&1 || true
+      - name: Dump git trace
+        if: always()
+        run: cat /tmp/git-trace2.log 2>/dev/null || echo "no trace written"
       - name: Test
         run: swift test --parallel
         timeout-minutes: 8
