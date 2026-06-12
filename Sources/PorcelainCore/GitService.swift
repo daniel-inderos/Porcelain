@@ -128,13 +128,15 @@ public actor GitService: GitServicing {
     }
 
     public func unstage(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult {
-        let arguments = try pathArguments(base: ["restore", "--staged", "--"], paths: paths, emptyMeansAll: true)
-        do {
+        // `restore --staged` needs HEAD; on a repository with no commits yet,
+        // drop the paths from the index instead.
+        let headProbe = try await runGit(["rev-parse", "--verify", "--quiet", "HEAD"], in: repositoryURL, allowFailure: true)
+        guard headProbe.exitCode == 0 else {
+            let arguments = try pathArguments(base: ["rm", "--cached", "--ignore-unmatch", "-r", "--"], paths: paths, emptyMeansAll: true)
             return try await runGit(arguments, in: repositoryURL)
-        } catch GitError.commandFailed(let result) where result.standardError.localizedCaseInsensitiveContains("could not resolve HEAD") {
-            let fallbackPaths = try pathArguments(base: ["rm", "--cached", "--ignore-unmatch", "-r", "--"], paths: paths, emptyMeansAll: true)
-            return try await runGit(fallbackPaths, in: repositoryURL)
         }
+        let arguments = try pathArguments(base: ["restore", "--staged", "--"], paths: paths, emptyMeansAll: true)
+        return try await runGit(arguments, in: repositoryURL)
     }
 
     public func discard(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult {
