@@ -148,6 +148,35 @@ public struct GitStatus: Equatable, Sendable {
 
     public var isClean: Bool { changes.isEmpty }
     public var branchDisplayName: String { branchName ?? detachedHead.map { "Detached \($0)" } ?? "Unknown" }
+
+    public func preservingSelection(for selectedChange: GitChange?, staged selectedIsStaged: Bool) -> GitChangeSelection? {
+        guard let selectedChange else { return nil }
+        guard let change = changes.first(where: { $0.id == selectedChange.id }) ?? changes.first(where: { $0.path == selectedChange.path }) else {
+            return nil
+        }
+        return GitChangeSelection(change: change, isStaged: change.bestAvailableSelection(preferredStaged: selectedIsStaged))
+    }
+}
+
+public struct GitChangeSelection: Equatable, Sendable {
+    public let change: GitChange
+    public let isStaged: Bool
+}
+
+private extension GitChange {
+    func bestAvailableSelection(preferredStaged: Bool) -> Bool {
+        if isSelectable(staged: preferredStaged) {
+            return preferredStaged
+        }
+        if isSelectable(staged: !preferredStaged) {
+            return !preferredStaged
+        }
+        return isStaged
+    }
+
+    func isSelectable(staged: Bool) -> Bool {
+        staged ? isStaged : (hasUnstagedChanges || isUntracked)
+    }
 }
 
 public struct GitBranch: Identifiable, Hashable, Sendable {
