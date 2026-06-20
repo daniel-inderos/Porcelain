@@ -210,12 +210,16 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     private var watchableWorktreeURLs: [URL] {
+        knownWorktreeURLs.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+
+    private var knownWorktreeURLs: [URL] {
         worktreeInfos.compactMap { info in
             let worktree = info.worktree
             guard !worktree.isBare, !worktree.isPrunable else { return nil }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: worktree.path.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else { return nil }
             return worktree.path
         }
     }
@@ -223,7 +227,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private func refreshChangedWorktreeSummaries(for changedURLs: [URL]) {
         guard selectedTab == .worktrees else { return }
 
-        let worktreeURLs = watchableWorktreeURLs
+        let worktreeURLs = knownWorktreeURLs
         let affectedURLs = changedURLs.isEmpty
             ? Set(worktreeURLs)
             : FileWatchPathMatcher.watchedURLs(matching: changedURLs, in: worktreeURLs)
