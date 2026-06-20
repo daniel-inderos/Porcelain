@@ -301,6 +301,13 @@ public struct WorktreeComparisonFile: Identifiable, Hashable, Sendable {
     public let oldPath: String?
     public let status: GitFileState
 
+    public var snapshotPaths: Set<String> {
+        if let oldPath, oldPath != path {
+            return Set([oldPath, path])
+        }
+        return Set([path])
+    }
+
     public init(path: String, oldPath: String? = nil, status: GitFileState) {
         self.path = path
         self.oldPath = oldPath

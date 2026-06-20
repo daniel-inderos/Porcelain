@@ -119,7 +119,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             try await self.gitService.diffBetweenWorktrees(
                 baseURL: baseURL,
                 comparisonURL: comparisonURL,
-                path: file?.path
+                file: file
             )
         }
         return outcome.value

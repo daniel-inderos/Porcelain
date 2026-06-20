@@ -13,7 +13,7 @@ public protocol GitServicing: Sendable {
     func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult
     func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary
     func compareWorktrees(baseURL: URL, comparisonURL: URL) async throws -> WorktreeComparison
-    func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, path: String?) async throws -> DiffContent
+    func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, file: WorktreeComparisonFile?) async throws -> DiffContent
     func identity(in repositoryURL: URL) async throws -> GitIdentity
     func diff(for change: GitChange, in repositoryURL: URL, staged: Bool) async throws -> DiffContent
     func stage(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult
@@ -167,25 +167,28 @@ public actor GitService: GitServicing {
             let files = try await changedFiles(in: snapshot)
             let diff = try await diffBetweenSnapshot(
                 snapshot,
-                path: nil,
+                file: nil,
                 title: "\(baseURL.lastPathComponent) vs \(comparisonURL.lastPathComponent)"
             )
             return WorktreeComparison(baseURL: baseURL, comparisonURL: comparisonURL, files: files, diff: diff)
         }
     }
 
-    public func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, path: String?) async throws -> DiffContent {
-        if let path {
+    public func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, file: WorktreeComparisonFile?) async throws -> DiffContent {
+        if let path = file?.path {
             try validateRelativePath(path)
+        }
+        if let oldPath = file?.oldPath {
+            try validateRelativePath(oldPath)
         }
 
         let baseURL = Self.realResolvedURL(baseURL)
         let comparisonURL = Self.realResolvedURL(comparisonURL)
-        return try await withWorktreeSnapshots(baseURL: baseURL, comparisonURL: comparisonURL, limitedTo: path.map { Set([$0]) }) { snapshot in
+        return try await withWorktreeSnapshots(baseURL: baseURL, comparisonURL: comparisonURL, limitedTo: file?.snapshotPaths) { snapshot in
             try await diffBetweenSnapshot(
                 snapshot,
-                path: path,
-                title: path ?? "\(baseURL.lastPathComponent) vs \(comparisonURL.lastPathComponent)"
+                file: file,
+                title: file?.path ?? "\(baseURL.lastPathComponent) vs \(comparisonURL.lastPathComponent)"
             )
         }
     }
@@ -407,19 +410,25 @@ public actor GitService: GitServicing {
         )
     }
 
-    private func diffBetweenSnapshot(_ snapshot: WorktreeSnapshot, path: String?, title: String) async throws -> DiffContent {
+    private func diffBetweenSnapshot(_ snapshot: WorktreeSnapshot, file: WorktreeComparisonFile?, title: String) async throws -> DiffContent {
         var arguments = ["diff", "--no-index", "--find-renames", "--find-copies", "--binary"]
-        if let path {
-            arguments += ["--"]
-            switch snapshot.existence(for: path) {
-            case (true, true):
-                arguments += ["\(snapshot.baseName)/\(path)", "\(snapshot.comparisonName)/\(path)"]
-            case (false, true):
-                arguments += ["/dev/null", "\(snapshot.comparisonName)/\(path)"]
-            case (true, false):
-                arguments += ["\(snapshot.baseName)/\(path)", "/dev/null"]
-            case (false, false):
-                arguments += ["\(snapshot.baseName)/\(path)", "\(snapshot.comparisonName)/\(path)"]
+        if let file {
+            let basePath = file.oldPath ?? file.path
+            let comparisonPath = file.path
+            if basePath != comparisonPath {
+                arguments += ["--", snapshot.baseName, snapshot.comparisonName]
+            } else {
+                arguments += ["--"]
+                switch snapshot.existence(basePath: basePath, comparisonPath: comparisonPath) {
+                case (true, true):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                case (false, true):
+                    arguments += ["/dev/null", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                case (true, false):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "/dev/null"]
+                case (false, false):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                }
             }
         } else {
             arguments += ["--", snapshot.baseName, snapshot.comparisonName]
@@ -926,11 +935,11 @@ private struct WorktreeSnapshot {
         parentURL.appendingPathComponent(comparisonName, isDirectory: true)
     }
 
-    func existence(for path: String) -> (base: Bool, comparison: Bool) {
+    func existence(basePath: String, comparisonPath: String) -> (base: Bool, comparison: Bool) {
         let fileManager = FileManager.default
         return (
-            fileManager.fileExists(atPath: baseURL.appendingPathComponent(path).path),
-            fileManager.fileExists(atPath: comparisonURL.appendingPathComponent(path).path)
+            fileManager.fileExists(atPath: baseURL.appendingPathComponent(basePath).path),
+            fileManager.fileExists(atPath: comparisonURL.appendingPathComponent(comparisonPath).path)
         )
     }
 }

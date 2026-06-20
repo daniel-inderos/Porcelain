@@ -167,9 +167,10 @@ final class GitServiceTests: XCTestCase {
         try runGit(["config", "user.email", "tests@example.com"], in: repository.url)
 
         try "ignored.log\n".write(to: repository.url.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try "renamed content\n".write(to: repository.url.appendingPathComponent("old-name.txt"), atomically: true, encoding: .utf8)
         try "original\n".write(to: repository.url.appendingPathComponent("shared.txt"), atomically: true, encoding: .utf8)
         try "tracked\n".write(to: repository.url.appendingPathComponent("deleted-in-feature.txt"), atomically: true, encoding: .utf8)
-        _ = try await service.stage(paths: [".gitignore", "shared.txt", "deleted-in-feature.txt"], in: repository.url)
+        _ = try await service.stage(paths: [".gitignore", "old-name.txt", "shared.txt", "deleted-in-feature.txt"], in: repository.url)
         _ = try await service.commit(summary: "Initial commit", description: "", author: nil, amend: false, in: repository.url)
 
         _ = try await service.addWorktree(at: worktreeURL, branch: "feature/worktree", createBranch: true, in: repository.url)
@@ -180,6 +181,10 @@ final class GitServiceTests: XCTestCase {
 
         try "feature worktree\n".write(to: worktreeURL.appendingPathComponent("shared.txt"), atomically: true, encoding: .utf8)
         try "feature only\n".write(to: worktreeURL.appendingPathComponent("feature-only.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.moveItem(
+            at: worktreeURL.appendingPathComponent("old-name.txt"),
+            to: worktreeURL.appendingPathComponent("new-name.txt")
+        )
         try "ignored feature\n".write(to: worktreeURL.appendingPathComponent("ignored.log"), atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: worktreeURL.appendingPathComponent("deleted-in-feature.txt"))
 
@@ -188,6 +193,7 @@ final class GitServiceTests: XCTestCase {
 
         XCTAssertEqual(filesByPath["shared.txt"], .modified)
         XCTAssertEqual(filesByPath["feature-only.txt"], .added)
+        XCTAssertEqual(filesByPath["new-name.txt"], .renamed)
         XCTAssertEqual(filesByPath["current-only.txt"], .deleted)
         XCTAssertEqual(filesByPath["deleted-in-feature.txt"], .deleted)
         XCTAssertNil(filesByPath["ignored.log"])
@@ -198,11 +204,27 @@ final class GitServiceTests: XCTestCase {
         XCTAssertTrue(comparison.diff.text.contains("+feature only"))
         XCTAssertTrue(comparison.diff.text.contains("-current only"))
 
-        let sharedDiff = try await service.diffBetweenWorktrees(baseURL: repository.url, comparisonURL: worktreeURL, path: "shared.txt")
+        let sharedDiff = try await service.diffBetweenWorktrees(
+            baseURL: repository.url,
+            comparisonURL: worktreeURL,
+            file: WorktreeComparisonFile(path: "shared.txt", status: .modified)
+        )
         XCTAssertEqual(sharedDiff.path, "shared.txt")
         XCTAssertTrue(sharedDiff.text.contains("-current worktree"))
         XCTAssertTrue(sharedDiff.text.contains("+feature worktree"))
         XCTAssertFalse(sharedDiff.text.contains("feature-only.txt"))
+
+        let renamedFile = try XCTUnwrap(comparison.files.first { $0.path == "new-name.txt" })
+        XCTAssertEqual(renamedFile.oldPath, "old-name.txt")
+        let renamedDiff = try await service.diffBetweenWorktrees(
+            baseURL: repository.url,
+            comparisonURL: worktreeURL,
+            file: renamedFile
+        )
+        XCTAssertEqual(renamedDiff.path, "new-name.txt")
+        XCTAssertTrue(renamedDiff.text.contains("rename from base/old-name.txt"))
+        XCTAssertTrue(renamedDiff.text.contains("rename to comparison/new-name.txt"))
+        XCTAssertFalse(renamedDiff.text.contains("new file mode"))
     }
 
     func testRecentRepositoryStoreDeduplicates() {
