@@ -4,11 +4,13 @@ import PorcelainCore
 struct DiffPanelView: View {
     let diff: DiffContent
     @Binding var mode: DiffMode
+    var emptyTitle = "Select a file to inspect its diff."
+    var emptyMessage = "Binary, missing, and very large files are summarized here."
 
     var body: some View {
         Group {
             if diff.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                EmptyDiffView()
+                EmptyDiffView(title: emptyTitle, message: emptyMessage)
             } else if diff.isBinary {
                 BinaryDiffView(diff: diff)
             } else {
@@ -61,14 +63,17 @@ struct DiffPanelView: View {
 }
 
 private struct EmptyDiffView: View {
+    let title: String
+    let message: String
+
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.title)
                 .foregroundStyle(.secondary)
-            Text("Select a file to inspect its diff.")
+            Text(title)
                 .font(.headline)
-            Text("Binary, missing, and very large files are summarized here.")
+            Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

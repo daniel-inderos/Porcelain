@@ -9,6 +9,7 @@ struct WorktreesView: View {
     @State private var worktreePendingRemoval: WorktreeInfo?
     @State private var showingPruneConfirmation = false
     @State private var reviewSession: WorktreeReviewSession?
+    @State private var comparisonSession: WorktreeComparisonSession?
     @Namespace private var glassNamespace
 
     var body: some View {
@@ -84,7 +85,15 @@ struct WorktreesView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let reviewSession {
+        if let comparisonSession {
+            WorktreeComparisonView(
+                baseInfo: comparisonSession.baseInfo,
+                comparisonInfo: comparisonSession.comparisonInfo,
+                viewModel: viewModel,
+                glassNamespace: glassNamespace,
+                onBack: dismissComparison
+            )
+        } else if let reviewSession {
             WorktreeReviewView(
                 info: reviewSession.info,
                 parentRepositoryURL: viewModel.repository.url,
@@ -118,6 +127,9 @@ struct WorktreesView: View {
                                 glassNamespace: glassNamespace,
                                 onReview: {
                                     beginReview(for: info)
+                                },
+                                onCompare: {
+                                    beginComparison(for: info)
                                 },
                                 onRemove: {
                                     worktreePendingRemoval = info
@@ -176,6 +188,22 @@ struct WorktreesView: View {
         viewModel.refreshWorktrees()
     }
 
+    private func beginComparison(for info: WorktreeInfo) {
+        guard !isCurrent(info), !info.worktree.isBare, !info.worktree.isPrunable else { return }
+        let baseInfo = viewModel.worktreeInfos.first(where: isCurrent)
+        withAnimation(.smooth) {
+            reviewSession = nil
+            comparisonSession = WorktreeComparisonSession(baseInfo: baseInfo, comparisonInfo: info)
+        }
+    }
+
+    private func dismissComparison() {
+        withAnimation(.smooth) {
+            comparisonSession = nil
+        }
+        viewModel.refreshWorktrees()
+    }
+
     private func isCurrent(_ info: WorktreeInfo) -> Bool {
         info.worktree.isCurrent(for: viewModel.repository.url)
     }
@@ -209,6 +237,11 @@ private struct WorktreeReviewSession {
     let viewModel: RepositoryViewModel
 }
 
+private struct WorktreeComparisonSession {
+    let baseInfo: WorktreeInfo?
+    let comparisonInfo: WorktreeInfo
+}
+
 private struct WorktreeCard: View {
     let info: WorktreeInfo
     let repositoryURL: URL
@@ -216,6 +249,7 @@ private struct WorktreeCard: View {
     let openWorktree: (URL) -> Void
     let glassNamespace: Namespace.ID
     let onReview: () -> Void
+    let onCompare: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -254,6 +288,7 @@ private struct WorktreeCard: View {
 
                 HStack(spacing: 8) {
                     reviewButton
+                    compareButton
 
                     if !isCurrent {
                         Button {
@@ -308,6 +343,19 @@ private struct WorktreeCard: View {
     }
 
     @ViewBuilder
+    private var compareButton: some View {
+        if canCompare {
+            Button {
+                onCompare()
+            } label: {
+                Label("Compare", systemImage: "arrow.left.arrow.right")
+            }
+            .buttonStyle(.bordered)
+            .help("Compare with current worktree")
+        }
+    }
+
+    @ViewBuilder
     private var commitLine: some View {
         if let commit = info.summary?.lastCommit {
             HStack(spacing: 6) {
@@ -334,6 +382,11 @@ private struct WorktreeCard: View {
         if canReview && !showsReviewButton {
             Button("Review") {
                 onReview()
+            }
+        }
+        if canCompare {
+            Button("Compare with Current") {
+                onCompare()
             }
         }
         if !isCurrent {
@@ -364,6 +417,10 @@ private struct WorktreeCard: View {
 
     private var canReview: Bool {
         !info.worktree.isBare && !info.worktree.isPrunable
+    }
+
+    private var canCompare: Bool {
+        canReview && !isCurrent
     }
 
     private var isDirty: Bool {
@@ -426,6 +483,281 @@ private struct WorktreeCard: View {
             parts.append(tracking)
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct WorktreeComparisonView: View {
+    let baseInfo: WorktreeInfo?
+    let comparisonInfo: WorktreeInfo
+    @ObservedObject var viewModel: RepositoryViewModel
+    let glassNamespace: Namespace.ID
+    let onBack: () -> Void
+
+    @State private var comparison: WorktreeComparison?
+    @State private var diff = DiffContent(path: "", text: "")
+    @State private var diffMode: DiffMode = .unified
+    @State private var selection: WorktreeComparisonSelection? = .fullDiff
+    @State private var isLoading = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            if isLoading && comparison == nil {
+                ProgressView("Comparing worktrees")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                comparisonContent
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: comparisonInfo.id) {
+            await loadComparison()
+        }
+        .onExitCommand {
+            onBack()
+        }
+    }
+
+    private var comparisonContent: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            HSplitView {
+                comparisonList
+                    .frame(minWidth: 260, idealWidth: 320, maxWidth: max(260, min(460, width * 0.34)))
+
+                DiffPanelView(
+                    diff: diff,
+                    mode: $diffMode,
+                    emptyTitle: "No differences",
+                    emptyMessage: "These worktrees have the same tracked and visible untracked file contents."
+                )
+                .frame(minWidth: 340, idealWidth: 520, maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Button {
+                onBack()
+            } label: {
+                Label("Back to Worktrees", systemImage: "chevron.left")
+            }
+            .help("Back to Worktrees")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("Compare Worktrees")
+                        .font(.headline)
+                    WorktreeBadgesView(info: comparisonInfo, currentRepositoryURL: viewModel.repository.url)
+                }
+
+                HStack(spacing: 6) {
+                    Text(baseDisplayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "arrow.right")
+                    Text(comparisonInfo.worktree.displayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                Task {
+                    await loadComparison()
+                }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .help("Refresh comparison")
+            .disabled(isLoading)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .glassEffectID(comparisonInfo.id, in: glassNamespace)
+    }
+
+    private var comparisonList: some View {
+        List(selection: selectionBinding) {
+            Section {
+                WorktreeComparisonDetailsBlock(
+                    baseName: baseDisplayName,
+                    comparisonName: comparisonInfo.worktree.displayName,
+                    fileCount: comparison?.files.count ?? 0
+                )
+            }
+
+            Section {
+                WorktreeFullComparisonRow(fileCount: comparison?.files.count ?? 0)
+                    .tag(WorktreeComparisonSelection.fullDiff)
+
+                ForEach(comparison?.files ?? []) { file in
+                    WorktreeComparisonFileRow(file: file)
+                        .tag(WorktreeComparisonSelection.file(file.id))
+                }
+            }
+        }
+        .scrollEdgeEffectStyle(.soft, for: .top)
+    }
+
+    private var selectionBinding: Binding<WorktreeComparisonSelection?> {
+        Binding {
+            selection
+        } set: { newSelection in
+            guard let newSelection else { return }
+            selection = newSelection
+            Task {
+                await select(newSelection)
+            }
+        }
+    }
+
+    private var baseURL: URL {
+        baseInfo?.worktree.path ?? viewModel.repository.url
+    }
+
+    private var baseDisplayName: String {
+        baseInfo?.worktree.displayName ?? "Current"
+    }
+
+    private func loadComparison() async {
+        isLoading = true
+        selection = .fullDiff
+        let loaded = await viewModel.compareWorktrees(
+            baseURL: baseURL,
+            comparisonURL: comparisonInfo.worktree.path
+        )
+        guard !Task.isCancelled else { return }
+        comparison = loaded
+        diff = loaded?.diff ?? DiffContent(path: "\(baseDisplayName) vs \(comparisonInfo.worktree.displayName)", text: "")
+        isLoading = false
+    }
+
+    private func select(_ selection: WorktreeComparisonSelection) async {
+        switch selection {
+        case .fullDiff:
+            diff = comparison?.diff ?? DiffContent(path: "\(baseDisplayName) vs \(comparisonInfo.worktree.displayName)", text: "")
+        case .file(let fileID):
+            guard let file = comparison?.files.first(where: { $0.id == fileID }) else { return }
+            let loaded = await viewModel.diffBetweenWorktrees(
+                baseURL: baseURL,
+                comparisonURL: comparisonInfo.worktree.path,
+                file: file
+            )
+            guard !Task.isCancelled, self.selection == selection else { return }
+            if let loaded {
+                diff = loaded
+            }
+        }
+    }
+}
+
+private enum WorktreeComparisonSelection: Hashable {
+    case fullDiff
+    case file(WorktreeComparisonFile.ID)
+}
+
+private struct WorktreeComparisonDetailsBlock: View {
+    let baseName: String
+    let comparisonName: String
+    let fileCount: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(fileCount) changed \(fileCount == 1 ? "file" : "files")")
+                .font(.callout.weight(.medium))
+            HStack(spacing: 6) {
+                Text(baseName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "arrow.right")
+                Text(comparisonName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+    }
+}
+
+private struct WorktreeFullComparisonRow: View {
+    let fileCount: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text")
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Full comparison")
+                Text("\(fileCount) changed \(fileCount == 1 ? "file" : "files")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+private struct WorktreeComparisonFileRow: View {
+    let file: WorktreeComparisonFile
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(file.status.shortLabel)
+                .font(.caption2.weight(.bold))
+                .frame(width: 22, height: 18)
+                .foregroundStyle(labelColor)
+                .background(labelColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.path)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let oldPath = file.oldPath {
+                    Text("from \(oldPath)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text(file.status.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 7)
+    }
+
+    private var labelColor: Color {
+        switch file.status {
+        case .added, .untracked:
+            .green
+        case .deleted:
+            .red
+        case .renamed, .copied:
+            .blue
+        case .unmerged:
+            .orange
+        default:
+            .secondary
+        }
     }
 }
 

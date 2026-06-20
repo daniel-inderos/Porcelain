@@ -281,6 +281,33 @@ public struct GitCommitFile: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct WorktreeComparison: Equatable, Sendable {
+    public let baseURL: URL
+    public let comparisonURL: URL
+    public let files: [WorktreeComparisonFile]
+    public let diff: DiffContent
+
+    public init(baseURL: URL, comparisonURL: URL, files: [WorktreeComparisonFile], diff: DiffContent) {
+        self.baseURL = baseURL
+        self.comparisonURL = comparisonURL
+        self.files = files
+        self.diff = diff
+    }
+}
+
+public struct WorktreeComparisonFile: Identifiable, Hashable, Sendable {
+    public var id: String { "\(status.rawValue)|\(path)|\(oldPath ?? "")" }
+    public let path: String
+    public let oldPath: String?
+    public let status: GitFileState
+
+    public init(path: String, oldPath: String? = nil, status: GitFileState) {
+        self.path = path
+        self.oldPath = oldPath
+        self.status = status
+    }
+}
+
 public struct DiffContent: Equatable, Sendable {
     public let path: String
     public let text: String

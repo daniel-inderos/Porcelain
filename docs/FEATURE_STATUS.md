@@ -34,6 +34,7 @@ Status values:
 | Per-worktree summaries | Done | Loads clean/dirty counts, staged/untracked/conflicted counts, insertions/deletions, ahead/behind, branch, and latest commit per worktree |
 | Worktree context switching | Done | Opens another worktree as the selected repository from the Worktrees tab |
 | In-place worktree review | Done | Uses a second `RepositoryViewModel` rooted at the worktree path and embeds the Changes workflow for diff, stage, discard, and commit |
+| Cross-worktree comparison | Done | Compares the current worktree against a selected worktree, including tracked files and visible untracked files while excluding Git metadata and ignored files |
 | Fetch/pull/push | Done | Uses system Git and shows raw output/errors; push sets the upstream automatically when the branch has none |
 | Remotes | Done | Add, edit URL, remove, list fetch/push URLs |
 | History | Done | Commit list, changed files, commit diff |
@@ -44,6 +45,6 @@ Status values:
 
 ## Known Worktree Limits
 
-- Cross-worktree comparison is not available yet.
+- Cross-worktree comparison is scoped to current worktree vs. selected worktree. Arbitrary two-worktree selection is not available yet.
 - Worktree summaries refresh when the Worktrees tab is entered, after operations performed while the tab is visible, and when returning from an in-place review. They do not use per-worktree file watching.
 - In-place review works on one worktree at a time.
