@@ -12,9 +12,11 @@ Porcelain is an MVP. It focuses on common workflows and on making multiple workt
 
 ## Requirements
 
-- macOS 14 or newer
-- Xcode 16 or newer, or the Swift toolchain included with Xcode
+- macOS 26 or newer
+- Xcode 26 or newer, or another Swift 6.2+ toolchain with the macOS 26 SDK
 - Git available through the system path
+
+Porcelain targets the SwiftUI glass effect APIs used by the current interface, and the package manifest declares macOS 26 as the deployment target.
 
 ## Build
 

@@ -9,8 +9,11 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
 
     @Published var selectedTab: PorcelainTab = .changes {
         didSet {
-            guard selectedTab == .worktrees, oldValue != .worktrees else { return }
-            refreshWorktrees()
+            if selectedTab == .worktrees, oldValue != .worktrees {
+                refreshWorktrees()
+            } else if oldValue == .worktrees, selectedTab != .worktrees {
+                stopWorktreeWatching()
+            }
         }
     }
     @Published var status = GitStatus(branchName: nil, upstreamName: nil, ahead: 0, behind: 0, detachedHead: nil, changes: [])
@@ -38,7 +41,10 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private let gitService: GitServicing
     private let keychainStore: KeychainStore
     private let fileWatcher = RepositoryFileWatcher()
+    private let worktreeFileWatcher = RepositoryFileWatcher()
     private var isWorktreeRefreshInFlight = false
+    private var isWorktreeSummaryRefreshInFlight = false
+    private var pendingWorktreeSummaryRefreshPaths: Set<String> = []
 
     init(
         repository: Repository,
@@ -85,6 +91,7 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
 
     deinit {
         fileWatcher.stop()
+        worktreeFileWatcher.stop()
     }
 
     func refresh() {
@@ -129,9 +136,8 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         Task {
             do {
                 status = try await gitService.status(in: repository.url)
-                if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
-                    selectedChangeIsStaged = selectedChange.isStaged
-                    await selectChange(selectedChange, staged: selectedChangeIsStaged)
+                if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
+                    await selectChange(selection.change, staged: selection.isStaged)
                 } else {
                     clearChangeSelection()
                 }
@@ -161,8 +167,8 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 await loadWorktreeInfos()
             }
 
-            if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
-                await selectChange(selectedChange, staged: selectedChangeIsStaged)
+            if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
+                await selectChange(selection.change, staged: selection.isStaged)
             } else if let first = unstagedChanges.first ?? stagedChanges.first {
                 await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
             } else {
@@ -178,7 +184,10 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private func loadWorktreeInfos() async {
         guard !isWorktreeRefreshInFlight else { return }
         isWorktreeRefreshInFlight = true
-        defer { isWorktreeRefreshInFlight = false }
+        defer {
+            isWorktreeRefreshInFlight = false
+            runPendingWorktreeSummaryRefresh()
+        }
         do {
             let worktrees = try await gitService.worktrees(in: repository.url)
             worktreeInfos = await Self.worktreeInfos(
@@ -186,9 +195,109 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 currentRepositoryURL: repository.url,
                 gitService: gitService
             )
+            pendingWorktreeSummaryRefreshPaths.removeAll()
+            updateWorktreeWatching()
         } catch {
             alert = AppAlert(error: error)
         }
+    }
+
+    private func updateWorktreeWatching() {
+        guard selectedTab == .worktrees else {
+            stopWorktreeWatching()
+            return
+        }
+
+        let worktreeURLs = watchableWorktreeURLs
+        guard !worktreeURLs.isEmpty else {
+            worktreeFileWatcher.stop()
+            return
+        }
+
+        worktreeFileWatcher.startWatching(repositoryURLs: worktreeURLs) { [weak self] changedURLs in
+            Task { @MainActor in
+                self?.refreshChangedWorktreeSummaries(for: changedURLs)
+            }
+        }
+    }
+
+    private func stopWorktreeWatching() {
+        worktreeFileWatcher.stop()
+        pendingWorktreeSummaryRefreshPaths.removeAll()
+    }
+
+    private var watchableWorktreeURLs: [URL] {
+        knownWorktreeURLs.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+    }
+
+    private var knownWorktreeURLs: [URL] {
+        worktreeInfos.compactMap { info in
+            let worktree = info.worktree
+            guard !worktree.isBare, !worktree.isPrunable else { return nil }
+            return worktree.path
+        }
+    }
+
+    private func refreshChangedWorktreeSummaries(for changedURLs: [URL]) {
+        guard selectedTab == .worktrees else { return }
+
+        let worktreeURLs = knownWorktreeURLs
+        let affectedURLs = changedURLs.isEmpty
+            ? Set(worktreeURLs)
+            : FileWatchPathMatcher.watchedURLs(matching: changedURLs, in: worktreeURLs)
+        guard !affectedURLs.isEmpty else { return }
+
+        let missingWorktreeWasChanged = affectedURLs.contains { url in
+            !FileManager.default.fileExists(atPath: url.path)
+        }
+        if missingWorktreeWasChanged {
+            refreshWorktrees()
+            return
+        }
+
+        pendingWorktreeSummaryRefreshPaths.formUnion(affectedURLs.map(FileWatchPathMatcher.normalizedPath))
+        runPendingWorktreeSummaryRefresh()
+    }
+
+    private func runPendingWorktreeSummaryRefresh() {
+        guard selectedTab == .worktrees,
+              !isWorktreeRefreshInFlight,
+              !isWorktreeSummaryRefreshInFlight else { return }
+
+        let paths = pendingWorktreeSummaryRefreshPaths
+        guard !paths.isEmpty else { return }
+        pendingWorktreeSummaryRefreshPaths.removeAll()
+        isWorktreeSummaryRefreshInFlight = true
+
+        Task { @MainActor in
+            defer {
+                isWorktreeSummaryRefreshInFlight = false
+                runPendingWorktreeSummaryRefresh()
+            }
+
+            let worktrees = worktreeInfos
+                .map(\.worktree)
+                .filter { paths.contains(FileWatchPathMatcher.normalizedPath($0.path)) }
+                .filter { !$0.isBare && !$0.isPrunable }
+            let updates = await Self.worktreeSummaryUpdates(for: worktrees, gitService: gitService)
+
+            guard selectedTab == .worktrees else { return }
+            applyWorktreeSummaryUpdates(updates)
+        }
+    }
+
+    private func applyWorktreeSummaryUpdates(_ updates: [String: WorktreeSummaryRefresh]) {
+        guard !updates.isEmpty else { return }
+
+        let updatedInfos = worktreeInfos.map { info in
+            let path = FileWatchPathMatcher.normalizedPath(info.worktree.path)
+            guard let update = updates[path] else { return info }
+            return WorktreeInfo(worktree: info.worktree, summary: update.summary)
+        }
+        worktreeInfos = Self.sortedWorktreeInfos(updatedInfos, currentRepositoryURL: repository.url)
     }
 
     private func clearChangeSelection() {
@@ -511,6 +620,11 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         }
     }
 
+    private struct WorktreeSummaryRefresh: Sendable {
+        let path: String
+        let summary: WorktreeChangeSummary?
+    }
+
     private static func worktreeInfos(
         for worktrees: [GitWorktree],
         currentRepositoryURL: URL,
@@ -534,7 +648,37 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             return infos
         }
 
-        return infos.sorted { lhs, rhs in
+        return sortedWorktreeInfos(infos, currentRepositoryURL: currentRepositoryURL)
+    }
+
+    private static func worktreeSummaryUpdates(
+        for worktrees: [GitWorktree],
+        gitService: GitServicing
+    ) async -> [String: WorktreeSummaryRefresh] {
+        await withTaskGroup(of: WorktreeSummaryRefresh.self) { group in
+            for worktree in worktrees {
+                group.addTask {
+                    let summary = try? await gitService.changeSummary(forWorktreeAt: worktree.path)
+                    return WorktreeSummaryRefresh(
+                        path: FileWatchPathMatcher.normalizedPath(worktree.path),
+                        summary: summary
+                    )
+                }
+            }
+
+            var updates: [String: WorktreeSummaryRefresh] = [:]
+            for await update in group {
+                updates[update.path] = update
+            }
+            return updates
+        }
+    }
+
+    private static func sortedWorktreeInfos(
+        _ infos: [WorktreeInfo],
+        currentRepositoryURL: URL
+    ) -> [WorktreeInfo] {
+        infos.sorted { lhs, rhs in
             let lhsIsCurrent = lhs.worktree.isCurrent(for: currentRepositoryURL)
             let rhsIsCurrent = rhs.worktree.isCurrent(for: currentRepositoryURL)
             if lhsIsCurrent != rhsIsCurrent {

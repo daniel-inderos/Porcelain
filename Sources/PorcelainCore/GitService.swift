@@ -890,21 +890,7 @@ public actor GitService: GitServicing {
     }
 
     private func validateRefName(_ name: String) throws -> String {
-        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleaned.isEmpty ||
-            cleaned.hasPrefix("-") ||
-            cleaned.contains("..") ||
-            cleaned.contains(" ") ||
-            cleaned.contains("~") ||
-            cleaned.contains("^") ||
-            cleaned.contains(":") ||
-            cleaned.contains("?") ||
-            cleaned.contains("*") ||
-            cleaned.contains("[") ||
-            cleaned.contains("\\") {
-            throw GitError.parseFailure("Enter a valid branch name.")
-        }
-        return cleaned
+        try GitRefNameValidator.validateBranchName(name)
     }
 
     private func validateRemoteName(_ name: String) throws {

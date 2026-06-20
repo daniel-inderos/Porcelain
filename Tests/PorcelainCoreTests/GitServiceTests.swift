@@ -70,6 +70,99 @@ final class GitServiceTests: XCTestCase {
         }
     }
 
+    func testBranchNameValidationAcceptsGitCompatibleNames() throws {
+        let validNames = [
+            "main",
+            "feature/worktree",
+            "release/v1.2.3",
+            "foo@bar",
+            "foo#bar",
+            "foo./bar",
+            "refs/heads/main"
+        ]
+
+        for name in validNames {
+            XCTAssertEqual(try GitRefNameValidator.validateBranchName(name), name)
+        }
+        XCTAssertEqual(try GitRefNameValidator.validateBranchName("  feature/worktree\n"), "feature/worktree")
+    }
+
+    func testBranchNameValidationRejectsInvalidRefSyntax() throws {
+        let invalidNames = [
+            "",
+            "   ",
+            "bad.lock",
+            "feature/bad.lock",
+            "feature..work",
+            "-feature",
+            "feature with space",
+            "@",
+            "HEAD",
+            "feature/",
+            "feature.",
+            "/feature",
+            "feature//work",
+            "feature/.hidden",
+            "feature@{upstream",
+            "feature~work",
+            "feature^work",
+            "feature:work",
+            "feature?work",
+            "feature*work",
+            "feature[work",
+            "feature\\work",
+            "feature\twork",
+            "feature\u{7F}work",
+            "feature\u{0}work"
+        ]
+
+        for name in invalidNames {
+            do {
+                _ = try GitRefNameValidator.validateBranchName(name)
+                XCTFail("Expected \(name.debugDescription) to be rejected")
+            } catch let error as GitError {
+                XCTAssertEqual(error.errorDescription, "Enter a valid branch name.")
+            } catch {
+                XCTFail("Unexpected error for \(name.debugDescription): \(error)")
+            }
+        }
+    }
+
+    func testBranchAndWorktreeOperationsValidateBranchNamesBeforeRunningGit() async {
+        let service = GitService(executableURL: URL(fileURLWithPath: "/porcelain/missing-git"))
+        let repositoryURL = URL(fileURLWithPath: "/tmp/porcelain-repository")
+        let worktreeURL = URL(fileURLWithPath: "/tmp/porcelain-worktree", isDirectory: true)
+        let invalidName = "feature..invalid"
+
+        await assertInvalidBranchNameRejected {
+            try await service.createBranch(named: invalidName, checkout: false, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.createBranch(named: invalidName, checkout: true, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.checkoutBranch(named: invalidName, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.renameBranch(from: nil, to: invalidName, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.renameBranch(from: invalidName, to: "valid", in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.deleteBranch(named: invalidName, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.mergeBranch(named: invalidName, in: repositoryURL)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.push(in: repositoryURL, setUpstreamBranch: invalidName)
+        }
+        await assertInvalidBranchNameRejected {
+            try await service.addWorktree(at: worktreeURL, branch: invalidName, createBranch: true, in: repositoryURL)
+        }
+    }
+
     func testUntrackedDirectoryDiffShowsDirectoryPreview() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -285,5 +378,20 @@ final class GitServiceTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func assertInvalidBranchNameRejected(
+        _ operation: () async throws -> GitCommandResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        do {
+            _ = try await operation()
+            XCTFail("Expected invalid branch name to be rejected", file: file, line: line)
+        } catch let error as GitError {
+            XCTAssertEqual(error.errorDescription, "Enter a valid branch name.", file: file, line: line)
+        } catch {
+            XCTFail("Unexpected error: \(error)", file: file, line: line)
+        }
     }
 }
