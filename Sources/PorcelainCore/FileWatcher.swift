@@ -13,7 +13,16 @@ public final class RepositoryFileWatcher: @unchecked Sendable {
     }
 
     public func startWatching(repositoryURL: URL, debounce: TimeInterval = 0.45, onChange: @escaping @Sendable () -> Void) {
+        startWatching(repositoryURLs: [repositoryURL], debounce: debounce) { _ in
+            onChange()
+        }
+    }
+
+    public func startWatching(repositoryURLs: [URL], debounce: TimeInterval = 0.45, onChange: @escaping @Sendable ([URL]) -> Void) {
         stop()
+
+        let repositoryURLs = uniqueURLs(repositoryURLs)
+        guard !repositoryURLs.isEmpty else { return }
 
         let box = CallbackBox(queue: queue, debounce: debounce, onChange: onChange)
         callbackBox = box
@@ -26,7 +35,7 @@ public final class RepositoryFileWatcher: @unchecked Sendable {
             copyDescription: nil
         )
 
-        let paths = [repositoryURL.path] as CFArray
+        let paths = repositoryURLs.map(\.path) as CFArray
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
 
         guard let createdStream = FSEventStreamCreate(
@@ -56,24 +65,71 @@ public final class RepositoryFileWatcher: @unchecked Sendable {
         callbackBox?.cancel()
         callbackBox = nil
     }
+
+    private func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seenPaths: Set<String> = []
+        var uniqueURLs: [URL] = []
+        for url in urls {
+            let path = FileWatchPathMatcher.normalizedPath(url)
+            guard seenPaths.insert(path).inserted else { continue }
+            uniqueURLs.append(url)
+        }
+        return uniqueURLs
+    }
+}
+
+public enum FileWatchPathMatcher {
+    public static func watchedURLs(matching changedURLs: [URL], in watchedURLs: [URL]) -> Set<URL> {
+        var watchedByPath: [String: URL] = [:]
+        for watchedURL in watchedURLs {
+            watchedByPath[normalizedPath(watchedURL)] = watchedURL
+        }
+
+        let changedPaths = changedURLs.map(normalizedPath)
+        var matches: Set<URL> = []
+        for (watchedPath, watchedURL) in watchedByPath where changedPaths.contains(where: { isPath($0, insideOrEqualTo: watchedPath) }) {
+            matches.insert(watchedURL)
+        }
+        return matches
+    }
+
+    public static func normalizedPath(_ url: URL) -> String {
+        url.standardizedFileURL.path
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo watchedPath: String) -> Bool {
+        if path == watchedPath {
+            return true
+        }
+
+        let prefix = watchedPath.hasSuffix("/") ? watchedPath : "\(watchedPath)/"
+        return path.hasPrefix(prefix)
+    }
 }
 
 private final class CallbackBox: @unchecked Sendable {
     private let queue: DispatchQueue
     private let debounce: TimeInterval
-    private let onChange: @Sendable () -> Void
+    private let onChange: @Sendable ([URL]) -> Void
     private var debounceWorkItem: DispatchWorkItem?
+    private var pendingChangedPaths: Set<String> = []
 
-    init(queue: DispatchQueue, debounce: TimeInterval, onChange: @escaping @Sendable () -> Void) {
+    init(queue: DispatchQueue, debounce: TimeInterval, onChange: @escaping @Sendable ([URL]) -> Void) {
         self.queue = queue
         self.debounce = debounce
         self.onChange = onChange
     }
 
-    func schedule() {
+    func schedule(changedPaths: [String]) {
         debounceWorkItem?.cancel()
-        let item = DispatchWorkItem { [onChange] in
-            onChange()
+        pendingChangedPaths.formUnion(changedPaths)
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let changedURLs = pendingChangedPaths
+                .sorted()
+                .map { URL(fileURLWithPath: $0) }
+            pendingChangedPaths.removeAll()
+            onChange(changedURLs)
         }
         debounceWorkItem = item
         queue.asyncAfter(deadline: .now() + debounce, execute: item)
@@ -82,11 +138,14 @@ private final class CallbackBox: @unchecked Sendable {
     func cancel() {
         debounceWorkItem?.cancel()
         debounceWorkItem = nil
+        pendingChangedPaths.removeAll()
     }
 }
 
-private let eventCallback: FSEventStreamCallback = { _, info, _, _, _, _ in
+private let eventCallback: FSEventStreamCallback = { _, info, _, eventPaths, _, _ in
     guard let info else { return }
     let box = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
-    box.schedule()
+    let pathsArray = unsafeBitCast(eventPaths, to: NSArray.self)
+    let paths = pathsArray.compactMap { $0 as? String }
+    box.schedule(changedPaths: paths)
 }

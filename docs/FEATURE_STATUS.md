@@ -45,5 +45,5 @@ Status values:
 ## Known Worktree Limits
 
 - Cross-worktree comparison is not available yet.
-- Worktree summaries refresh when the Worktrees tab is entered, after operations performed while the tab is visible, and when returning from an in-place review. They do not use per-worktree file watching.
+- Worktree summaries refresh when the Worktrees tab is entered, after operations performed while the tab is visible, when returning from an in-place review, and through debounced per-worktree file watching while the Worktrees tab is active.
 - In-place review works on one worktree at a time.
