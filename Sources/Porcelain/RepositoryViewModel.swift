@@ -111,9 +111,8 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         Task {
             do {
                 status = try await gitService.status(in: repository.url)
-                if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
-                    selectedChangeIsStaged = selectedChange.isStaged
-                    await selectChange(selectedChange, staged: selectedChangeIsStaged)
+                if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
+                    await selectChange(selection.change, staged: selection.isStaged)
                 } else {
                     clearChangeSelection()
                 }
@@ -143,8 +142,8 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
                 await loadWorktreeInfos()
             }
 
-            if let selectedChange, status.changes.contains(where: { $0.id == selectedChange.id }) {
-                await selectChange(selectedChange, staged: selectedChangeIsStaged)
+            if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
+                await selectChange(selection.change, staged: selection.isStaged)
             } else if let first = unstagedChanges.first ?? stagedChanges.first {
                 await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
             } else {
