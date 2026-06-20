@@ -12,6 +12,8 @@ public protocol GitServicing: Sendable {
     func removeWorktree(at worktreePath: URL, force: Bool, in repositoryURL: URL) async throws -> GitCommandResult
     func pruneWorktrees(in repositoryURL: URL) async throws -> GitCommandResult
     func changeSummary(forWorktreeAt worktreeURL: URL) async throws -> WorktreeChangeSummary
+    func compareWorktrees(baseURL: URL, comparisonURL: URL) async throws -> WorktreeComparison
+    func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, file: WorktreeComparisonFile?) async throws -> DiffContent
     func identity(in repositoryURL: URL) async throws -> GitIdentity
     func diff(for change: GitChange, in repositoryURL: URL, staged: Bool) async throws -> DiffContent
     func stage(paths: [String], in repositoryURL: URL) async throws -> GitCommandResult
@@ -156,6 +158,39 @@ public actor GitService: GitServicing {
             branchName: currentStatus.branchName,
             lastCommit: commits.first
         )
+    }
+
+    public func compareWorktrees(baseURL: URL, comparisonURL: URL) async throws -> WorktreeComparison {
+        let baseURL = Self.realResolvedURL(baseURL)
+        let comparisonURL = Self.realResolvedURL(comparisonURL)
+        return try await withWorktreeSnapshots(baseURL: baseURL, comparisonURL: comparisonURL, limitedTo: nil) { snapshot in
+            let files = try await changedFiles(in: snapshot)
+            let diff = try await diffBetweenSnapshot(
+                snapshot,
+                file: nil,
+                title: "\(baseURL.lastPathComponent) vs \(comparisonURL.lastPathComponent)"
+            )
+            return WorktreeComparison(baseURL: baseURL, comparisonURL: comparisonURL, files: files, diff: diff)
+        }
+    }
+
+    public func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, file: WorktreeComparisonFile?) async throws -> DiffContent {
+        if let path = file?.path {
+            try validateRelativePath(path)
+        }
+        if let oldPath = file?.oldPath {
+            try validateRelativePath(oldPath)
+        }
+
+        let baseURL = Self.realResolvedURL(baseURL)
+        let comparisonURL = Self.realResolvedURL(comparisonURL)
+        return try await withWorktreeSnapshots(baseURL: baseURL, comparisonURL: comparisonURL, limitedTo: file?.snapshotPaths) { snapshot in
+            try await diffBetweenSnapshot(
+                snapshot,
+                file: file,
+                title: file?.path ?? "\(baseURL.lastPathComponent) vs \(comparisonURL.lastPathComponent)"
+            )
+        }
     }
 
     public func identity(in repositoryURL: URL) async throws -> GitIdentity {
@@ -359,6 +394,207 @@ public actor GitService: GitServicing {
         }
         let result = try await runGit(arguments, in: repositoryURL)
         return diffContent(path: file?.path ?? commit.shortHash, text: result.standardOutput)
+    }
+
+    private func changedFiles(in snapshot: WorktreeSnapshot) async throws -> [WorktreeComparisonFile] {
+        let result = try await runGit(
+            ["diff", "--no-index", "--name-status", "-z", "-M", "-C", "--", snapshot.baseName, snapshot.comparisonName],
+            in: snapshot.parentURL,
+            allowFailure: true
+        )
+        try validateNoIndexDiffResult(result)
+        return try parseNoIndexNameStatus(
+            result.standardOutput,
+            baseName: snapshot.baseName,
+            comparisonName: snapshot.comparisonName
+        )
+    }
+
+    private func diffBetweenSnapshot(_ snapshot: WorktreeSnapshot, file: WorktreeComparisonFile?, title: String) async throws -> DiffContent {
+        var arguments = ["diff", "--no-index", "--find-renames", "--find-copies", "--binary"]
+        if let file {
+            let basePath = file.oldPath ?? file.path
+            let comparisonPath = file.path
+            if basePath != comparisonPath {
+                arguments += ["--", snapshot.baseName, snapshot.comparisonName]
+            } else {
+                arguments += ["--"]
+                switch snapshot.existence(basePath: basePath, comparisonPath: comparisonPath) {
+                case (true, true):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                case (false, true):
+                    arguments += ["/dev/null", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                case (true, false):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "/dev/null"]
+                case (false, false):
+                    arguments += ["\(snapshot.baseName)/\(basePath)", "\(snapshot.comparisonName)/\(comparisonPath)"]
+                }
+            }
+        } else {
+            arguments += ["--", snapshot.baseName, snapshot.comparisonName]
+        }
+
+        let result = try await runGit(arguments, in: snapshot.parentURL, allowFailure: true)
+        try validateNoIndexDiffResult(result)
+        return diffContent(path: title, text: result.standardOutput)
+    }
+
+    private func withWorktreeSnapshots<Value>(
+        baseURL: URL,
+        comparisonURL: URL,
+        limitedTo paths: Set<String>?,
+        operation: (WorktreeSnapshot) async throws -> Value
+    ) async throws -> Value {
+        if let paths {
+            for path in paths {
+                try validateRelativePath(path)
+            }
+        }
+
+        let parentURL = fileManager.temporaryDirectory
+            .appendingPathComponent("PorcelainWorktreeCompare-\(UUID().uuidString)", isDirectory: true)
+        let snapshot = WorktreeSnapshot(
+            parentURL: parentURL,
+            baseName: "base",
+            comparisonName: "comparison"
+        )
+
+        try fileManager.createDirectory(at: snapshot.baseURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: snapshot.comparisonURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: parentURL)
+        }
+
+        try await snapshotWorktree(at: baseURL, to: snapshot.baseURL, limitedTo: paths)
+        try await snapshotWorktree(at: comparisonURL, to: snapshot.comparisonURL, limitedTo: paths)
+
+        return try await operation(snapshot)
+    }
+
+    private func snapshotWorktree(at worktreeURL: URL, to snapshotURL: URL, limitedTo paths: Set<String>?) async throws {
+        let snapshotPaths: [String]
+        if let paths {
+            snapshotPaths = Array(paths).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        } else {
+            snapshotPaths = try await visibleWorktreeFilePaths(in: worktreeURL)
+        }
+
+        for path in snapshotPaths {
+            try copySnapshotFile(path, from: worktreeURL, to: snapshotURL)
+        }
+    }
+
+    private func visibleWorktreeFilePaths(in worktreeURL: URL) async throws -> [String] {
+        let result = try await runGit(["ls-files", "-co", "--exclude-standard", "-z"], in: worktreeURL)
+        let paths = result.standardOutput
+            .split(separator: "\0", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        var uniquePaths: Set<String> = []
+        for path in paths {
+            try validateRelativePath(path)
+            uniquePaths.insert(path)
+        }
+        return uniquePaths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private func copySnapshotFile(_ path: String, from worktreeURL: URL, to snapshotURL: URL) throws {
+        try validateRelativePath(path)
+
+        let sourceURL = worktreeURL.appendingPathComponent(path)
+        guard sourceURL.path.hasPrefix(worktreeURL.path + "/") else {
+            throw GitError.unsafePath(path)
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return
+        }
+
+        let destinationURL = snapshotURL.appendingPathComponent(path)
+        try fileManager.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func validateNoIndexDiffResult(_ result: GitCommandResult) throws {
+        if result.exitCode == 0 {
+            return
+        }
+        if result.exitCode == 1 && !result.standardOutput.isEmpty {
+            return
+        }
+        throw GitError.commandFailed(result)
+    }
+
+    private func parseNoIndexNameStatus(
+        _ output: String,
+        baseName: String,
+        comparisonName: String
+    ) throws -> [WorktreeComparisonFile] {
+        let fields = output
+            .split(separator: "\0", omittingEmptySubsequences: true)
+            .map(String.init)
+
+        var files: [WorktreeComparisonFile] = []
+        var index = 0
+        while index < fields.count {
+            let status = fields[index]
+            index += 1
+            guard let state = comparisonState(forNameStatus: status), index < fields.count else {
+                throw GitError.parseFailure("Could not parse worktree comparison output.")
+            }
+
+            if state == .renamed || state == .copied {
+                guard index + 1 < fields.count else {
+                    throw GitError.parseFailure("Could not parse worktree comparison output.")
+                }
+                let oldPath = snapshotRelativePath(fields[index], baseName: baseName, comparisonName: comparisonName)
+                let newPath = snapshotRelativePath(fields[index + 1], baseName: baseName, comparisonName: comparisonName)
+                files.append(WorktreeComparisonFile(path: newPath, oldPath: oldPath, status: state))
+                index += 2
+            } else {
+                let path = snapshotRelativePath(fields[index], baseName: baseName, comparisonName: comparisonName)
+                files.append(WorktreeComparisonFile(path: path, status: state))
+                index += 1
+            }
+        }
+
+        return files.sorted { lhs, rhs in
+            lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+    }
+
+    private func comparisonState(forNameStatus status: String) -> GitFileState? {
+        switch status.first {
+        case "A":
+            return .added
+        case "D":
+            return .deleted
+        case "R":
+            return .renamed
+        case "C":
+            return .copied
+        case "T":
+            return .typeChanged
+        case "M":
+            return .modified
+        default:
+            return nil
+        }
+    }
+
+    private func snapshotRelativePath(_ path: String, baseName: String, comparisonName: String) -> String {
+        for prefix in ["\(baseName)/", "\(comparisonName)/"] where path.hasPrefix(prefix) {
+            return String(path.dropFirst(prefix.count))
+        }
+        return path
     }
 
     private func shortstat(in repositoryURL: URL) async throws -> (filesChanged: Int, insertions: Int, deletions: Int) {
@@ -669,6 +905,28 @@ public actor GitService: GitServicing {
             return nil
         }
         return cleaned
+    }
+}
+
+private struct WorktreeSnapshot {
+    let parentURL: URL
+    let baseName: String
+    let comparisonName: String
+
+    var baseURL: URL {
+        parentURL.appendingPathComponent(baseName, isDirectory: true)
+    }
+
+    var comparisonURL: URL {
+        parentURL.appendingPathComponent(comparisonName, isDirectory: true)
+    }
+
+    func existence(basePath: String, comparisonPath: String) -> (base: Bool, comparison: Bool) {
+        let fileManager = FileManager.default
+        return (
+            fileManager.fileExists(atPath: baseURL.appendingPathComponent(basePath).path),
+            fileManager.fileExists(atPath: comparisonURL.appendingPathComponent(comparisonPath).path)
+        )
     }
 }
 

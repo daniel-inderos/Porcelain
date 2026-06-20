@@ -114,6 +114,24 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         )
     }
 
+    func compareWorktrees(baseURL: URL, comparisonURL: URL) async -> WorktreeComparison? {
+        let outcome = await withActivity("Comparing worktrees") {
+            try await self.gitService.compareWorktrees(baseURL: baseURL, comparisonURL: comparisonURL)
+        }
+        return outcome.value
+    }
+
+    func diffBetweenWorktrees(baseURL: URL, comparisonURL: URL, file: WorktreeComparisonFile?) async -> DiffContent? {
+        let outcome = await withActivity("Loading diff") {
+            try await self.gitService.diffBetweenWorktrees(
+                baseURL: baseURL,
+                comparisonURL: comparisonURL,
+                file: file
+            )
+        }
+        return outcome.value
+    }
+
     func refreshStatusOnly() {
         Task {
             do {
