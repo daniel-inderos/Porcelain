@@ -20,6 +20,7 @@ enum GitRefNameValidator {
         guard !name.contains("//") else { return false }
         guard !name.contains("@{") else { return false }
         guard name != "@" else { return false }
+        guard name != "HEAD" else { return false }
         guard !containsInvalidRefCharacter(name) else { return false }
 
         let components = name.split(separator: "/", omittingEmptySubsequences: false)

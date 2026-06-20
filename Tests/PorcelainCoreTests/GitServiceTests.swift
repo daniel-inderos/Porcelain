@@ -97,6 +97,7 @@ final class GitServiceTests: XCTestCase {
             "-feature",
             "feature with space",
             "@",
+            "HEAD",
             "feature/",
             "feature.",
             "/feature",
