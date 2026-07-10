@@ -83,7 +83,8 @@ Sources/
   Porcelain/       SwiftUI app, view models, AppKit integration
   PorcelainCore/   Git service, parsers, models, persistence, Keychain
 Tests/
-  PorcelainCoreTests/
+  PorcelainTests/       View-model concurrency and state-ordering tests
+  PorcelainCoreTests/   Parser, Git-service, persistence, and file-watcher tests
 Assets/            App icon and README images (regenerate with scripts/make_app_icon.sh)
 docs/
   ARCHITECTURE.md

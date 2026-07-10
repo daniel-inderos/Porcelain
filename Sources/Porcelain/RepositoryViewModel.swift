@@ -45,6 +45,19 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     private var isWorktreeRefreshInFlight = false
     private var isWorktreeSummaryRefreshInFlight = false
     private var pendingWorktreeSummaryRefreshPaths: Set<String> = []
+    private var fullRefreshTask: Task<Void, Never>?
+    private var fullRefreshRequestID: UUID?
+    private var fullRefreshActivityID: UUID?
+    private var statusRefreshTask: Task<Void, Never>?
+    private var statusRefreshRequestID: UUID?
+    private var changeSelectionTask: Task<Void, Never>?
+    private var changeSelectionRequestID: UUID?
+    private var commitSelectionTask: Task<Void, Never>?
+    private var commitSelectionRequestID: UUID?
+    private var commitFileSelectionTask: Task<Void, Never>?
+    private var commitFileSelectionRequestID: UUID?
+    private var activities: [UUID: Activity] = [:]
+    private var nextActivitySequence: UInt64 = 0
 
     init(
         repository: Repository,
@@ -90,14 +103,17 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     deinit {
+        fullRefreshTask?.cancel()
+        statusRefreshTask?.cancel()
+        changeSelectionTask?.cancel()
+        commitSelectionTask?.cancel()
+        commitFileSelectionTask?.cancel()
         fileWatcher.stop()
         worktreeFileWatcher.stop()
     }
 
     func refresh() {
-        Task {
-            await loadRepositoryState()
-        }
+        startFullRefresh()
     }
 
     func refreshWorktrees() {
@@ -133,52 +149,135 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     func refreshStatusOnly() {
-        Task {
-            do {
-                status = try await gitService.status(in: repository.url)
-                if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
-                    await selectChange(selection.change, staged: selection.isStaged)
-                } else {
-                    clearChangeSelection()
+        statusRefreshTask?.cancel()
+        let requestID = UUID()
+        statusRefreshRequestID = requestID
+        let gitService = gitService
+        let repositoryURL = repository.url
+
+        statusRefreshTask = Task { [weak self] in
+            defer {
+                if let self, self.statusRefreshRequestID == requestID {
+                    self.statusRefreshTask = nil
                 }
+            }
+
+            do {
+                let status = try await gitService.status(in: repositoryURL)
+                try Task.checkCancellation()
+                guard let self, self.statusRefreshRequestID == requestID else { return }
+                self.applyStatus(status, selectsFirstChangeWhenNeeded: false)
+            } catch is CancellationError {
+                return
             } catch {
-                alert = AppAlert(error: error)
+                guard let self,
+                      !Task.isCancelled,
+                      self.statusRefreshRequestID == requestID else { return }
+                self.alert = AppAlert(error: error)
             }
         }
     }
 
-    func loadRepositoryState() async {
-        await withActivity("Refreshing") {
-            async let statusValue = gitService.status(in: repository.url)
-            async let identityValue = gitService.identity(in: repository.url)
-            async let branchesValue = gitService.branches(in: repository.url)
-            async let remotesValue = gitService.remotes(in: repository.url)
-            async let commitsValue = gitService.history(in: repository.url, limit: 200)
+    @discardableResult
+    private func startFullRefresh(presentsActivity: Bool = true) -> Task<Void, Never> {
+        fullRefreshTask?.cancel()
+        if let fullRefreshActivityID {
+            endActivity(fullRefreshActivityID)
+        }
+        fullRefreshActivityID = nil
 
-            status = try await statusValue
-            identity = try await identityValue
-            branches = try await branchesValue
-            remotes = try await remotesValue
-            commits = try await commitsValue
+        // A full refresh is also the newest status request. Cancelling the
+        // status-only task avoids wasted work; the request ID protects us if
+        // the Git operation does not cooperate with cancellation.
+        statusRefreshTask?.cancel()
+        statusRefreshTask = nil
 
-            // Summaries cost several git invocations per worktree, so only
-            // load them while the Worktrees tab is showing them.
-            if selectedTab == .worktrees {
-                await loadWorktreeInfos()
+        let requestID = UUID()
+        let statusRequestID = UUID()
+        fullRefreshRequestID = requestID
+        statusRefreshRequestID = statusRequestID
+        let activityID = presentsActivity ? beginActivity("Refreshing") : nil
+        fullRefreshActivityID = activityID
+
+        let gitService = gitService
+        let repositoryURL = repository.url
+        let task = Task { [weak self] in
+            defer {
+                if let self {
+                    if let activityID {
+                        self.endActivity(activityID)
+                    }
+                    if self.fullRefreshRequestID == requestID {
+                        self.fullRefreshTask = nil
+                        if self.fullRefreshActivityID == activityID {
+                            self.fullRefreshActivityID = nil
+                        }
+                    }
+                }
             }
 
-            if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
-                await selectChange(selection.change, staged: selection.isStaged)
-            } else if let first = unstagedChanges.first ?? stagedChanges.first {
-                await selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
-            } else {
-                clearChangeSelection()
-            }
+            do {
+                async let identityValue = gitService.identity(in: repositoryURL)
+                async let branchesValue = gitService.branches(in: repositoryURL)
+                async let remotesValue = gitService.remotes(in: repositoryURL)
+                async let commitsValue = gitService.history(in: repositoryURL, limit: 200)
 
-            if selectedCommit == nil, let firstCommit = commits.first {
-                await selectCommit(firstCommit)
+                let loadedStatus: GitStatus?
+                let statusError: Error?
+                do {
+                    loadedStatus = try await gitService.status(in: repositoryURL)
+                    statusError = nil
+                } catch {
+                    loadedStatus = nil
+                    statusError = error
+                }
+
+                let snapshot = try await RepositorySnapshot(
+                    identity: identityValue,
+                    branches: branchesValue,
+                    remotes: remotesValue,
+                    commits: commitsValue
+                )
+                try Task.checkCancellation()
+
+                guard let self, self.fullRefreshRequestID == requestID else { return }
+                if self.statusRefreshRequestID == statusRequestID, let statusError {
+                    self.alert = self.appAlert(for: statusError)
+                    return
+                }
+
+                self.identity = snapshot.identity
+                self.branches = snapshot.branches
+                self.remotes = snapshot.remotes
+                self.commits = snapshot.commits
+
+                // A file-watcher status refresh may have started after this
+                // full refresh. In that case, retain the useful repository
+                // metadata but do not let this older status overwrite it.
+                if self.statusRefreshRequestID == statusRequestID, let loadedStatus {
+                    self.applyStatus(loadedStatus, selectsFirstChangeWhenNeeded: true)
+                }
+
+                // Summaries cost several git invocations per worktree, so only
+                // load them while the Worktrees tab is showing them.
+                if self.selectedTab == .worktrees {
+                    self.refreshWorktrees()
+                }
+
+                if self.selectedCommit == nil, let firstCommit = self.commits.first {
+                    self.selectCommit(firstCommit)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.fullRefreshRequestID == requestID else { return }
+                self.alert = self.appAlert(for: error)
             }
         }
+        fullRefreshTask = task
+        return task
     }
 
     private func loadWorktreeInfos() async {
@@ -301,42 +400,144 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
     }
 
     private func clearChangeSelection() {
+        changeSelectionTask?.cancel()
+        changeSelectionTask = nil
+        changeSelectionRequestID = nil
         selectedChange = nil
+        selectedChangeIsStaged = false
         diff = DiffContent(path: "", text: "")
     }
 
-    func selectChange(_ change: GitChange, staged: Bool) async {
+    private func applyStatus(_ status: GitStatus, selectsFirstChangeWhenNeeded: Bool) {
+        self.status = status
+        if let selection = status.preservingSelection(for: selectedChange, staged: selectedChangeIsStaged) {
+            selectChange(selection.change, staged: selection.isStaged)
+        } else if selectsFirstChangeWhenNeeded, let first = unstagedChanges.first ?? stagedChanges.first {
+            selectChange(first, staged: first.isStaged && !first.hasUnstagedChanges)
+        } else {
+            clearChangeSelection()
+        }
+    }
+
+    func selectChange(_ change: GitChange, staged: Bool) {
+        changeSelectionTask?.cancel()
+        let requestID = UUID()
+        changeSelectionRequestID = requestID
         selectedChange = change
         selectedChangeIsStaged = staged
-        do {
-            diff = try await gitService.diff(for: change, in: repository.url, staged: staged)
-        } catch {
-            diff = DiffContent(path: change.path, text: "")
-            alert = AppAlert(error: error)
+        diff = DiffContent(path: change.path, text: "")
+
+        let gitService = gitService
+        let repositoryURL = repository.url
+        changeSelectionTask = Task { [weak self] in
+            defer {
+                if let self, self.changeSelectionRequestID == requestID {
+                    self.changeSelectionTask = nil
+                }
+            }
+
+            do {
+                let diff = try await gitService.diff(for: change, in: repositoryURL, staged: staged)
+                try Task.checkCancellation()
+                guard let self,
+                      self.changeSelectionRequestID == requestID,
+                      self.selectedChange?.id == change.id,
+                      self.selectedChangeIsStaged == staged else { return }
+                self.diff = diff
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.changeSelectionRequestID == requestID,
+                      self.selectedChange?.id == change.id,
+                      self.selectedChangeIsStaged == staged else { return }
+                self.diff = DiffContent(path: change.path, text: "")
+                self.alert = AppAlert(error: error)
+            }
         }
     }
 
-    func selectCommit(_ commit: GitCommit) async {
+    func selectCommit(_ commit: GitCommit) {
+        commitSelectionTask?.cancel()
+        commitFileSelectionTask?.cancel()
+        commitFileSelectionTask = nil
+        commitFileSelectionRequestID = nil
+
+        let requestID = UUID()
+        commitSelectionRequestID = requestID
         selectedCommit = commit
-        do {
-            commitFiles = try await gitService.filesChanged(in: commit, repositoryURL: repository.url)
-            selectedCommitFile = commitFiles.first
-            commitDiff = try await gitService.diff(for: commit, file: selectedCommitFile, repositoryURL: repository.url)
-        } catch {
-            commitFiles = []
-            selectedCommitFile = nil
-            commitDiff = DiffContent(path: commit.shortHash, text: "")
-            alert = AppAlert(error: error)
+        commitFiles = []
+        selectedCommitFile = nil
+        commitDiff = DiffContent(path: commit.shortHash, text: "")
+
+        let gitService = gitService
+        let repositoryURL = repository.url
+        commitSelectionTask = Task { [weak self] in
+            defer {
+                if let self, self.commitSelectionRequestID == requestID {
+                    self.commitSelectionTask = nil
+                }
+            }
+
+            do {
+                let files = try await gitService.filesChanged(in: commit, repositoryURL: repositoryURL)
+                try Task.checkCancellation()
+                guard let self,
+                      self.commitSelectionRequestID == requestID,
+                      self.selectedCommit?.id == commit.id else { return }
+                self.commitFiles = files
+                self.selectCommitFile(files.first)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.commitSelectionRequestID == requestID,
+                      self.selectedCommit?.id == commit.id else { return }
+                self.commitFiles = []
+                self.selectedCommitFile = nil
+                self.commitDiff = DiffContent(path: commit.shortHash, text: "")
+                self.alert = AppAlert(error: error)
+            }
         }
     }
 
-    func selectCommitFile(_ file: GitCommitFile?) async {
+    func selectCommitFile(_ file: GitCommitFile?) {
+        commitFileSelectionTask?.cancel()
+        let requestID = UUID()
+        commitFileSelectionRequestID = requestID
         selectedCommitFile = file
         guard let selectedCommit else { return }
-        do {
-            commitDiff = try await gitService.diff(for: selectedCommit, file: file, repositoryURL: repository.url)
-        } catch {
-            alert = AppAlert(error: error)
+
+        let commit = selectedCommit
+        let gitService = gitService
+        let repositoryURL = repository.url
+        commitFileSelectionTask = Task { [weak self] in
+            defer {
+                if let self, self.commitFileSelectionRequestID == requestID {
+                    self.commitFileSelectionTask = nil
+                }
+            }
+
+            do {
+                let diff = try await gitService.diff(for: commit, file: file, repositoryURL: repositoryURL)
+                try Task.checkCancellation()
+                guard let self,
+                      self.commitFileSelectionRequestID == requestID,
+                      self.selectedCommit?.id == commit.id,
+                      self.selectedCommitFile?.id == file?.id else { return }
+                self.commitDiff = diff
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self,
+                      !Task.isCancelled,
+                      self.commitFileSelectionRequestID == requestID,
+                      self.selectedCommit?.id == commit.id,
+                      self.selectedCommitFile?.id == file?.id else { return }
+                self.alert = AppAlert(error: error)
+            }
         }
     }
 
@@ -588,7 +789,8 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
             let outcome = await withActivity(message, presentsAlert: presentsAlert) {
                 let result = try await operation()
                 rawGitOutput = result.combinedOutput
-                await loadRepositoryState()
+                let refreshTask = startFullRefresh(presentsActivity: false)
+                await refreshTask.value
                 return result
             }
             completion?(outcome.alert == nil, outcome.alert)
@@ -601,23 +803,56 @@ final class RepositoryViewModel: ObservableObject, Identifiable {
         presentsAlert: Bool = true,
         operation: @MainActor () async throws -> Value
     ) async -> (value: Value?, alert: AppAlert?) {
-        activityMessage = message
-        defer { activityMessage = nil }
+        let activityID = beginActivity(message)
+        defer { endActivity(activityID) }
         do {
             return (try await operation(), nil)
         } catch {
-            let appAlert: AppAlert
-            if case GitError.commandFailed(let result) = error {
-                rawGitOutput = result.combinedOutput
-                appAlert = AppAlert(error: error, rawOutput: result.combinedOutput)
-            } else {
-                appAlert = AppAlert(error: error)
-            }
+            let appAlert = appAlert(for: error)
             if presentsAlert {
                 alert = appAlert
             }
             return (nil, appAlert)
         }
+    }
+
+    private func appAlert(for error: Error) -> AppAlert {
+        if case GitError.commandFailed(let result) = error {
+            rawGitOutput = result.combinedOutput
+            return AppAlert(error: error, rawOutput: result.combinedOutput)
+        }
+        return AppAlert(error: error)
+    }
+
+    private func beginActivity(_ message: String) -> UUID {
+        nextActivitySequence &+= 1
+        let id = UUID()
+        activities[id] = Activity(sequence: nextActivitySequence, message: message)
+        updateActivityMessage()
+        return id
+    }
+
+    private func endActivity(_ id: UUID) {
+        activities.removeValue(forKey: id)
+        updateActivityMessage()
+    }
+
+    private func updateActivityMessage() {
+        activityMessage = activities.values.max { lhs, rhs in
+            lhs.sequence < rhs.sequence
+        }?.message
+    }
+
+    private struct Activity {
+        let sequence: UInt64
+        let message: String
+    }
+
+    private struct RepositorySnapshot: Sendable {
+        let identity: GitIdentity
+        let branches: [GitBranch]
+        let remotes: [GitRemote]
+        let commits: [GitCommit]
     }
 
     private struct WorktreeSummaryRefresh: Sendable {

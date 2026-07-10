@@ -104,9 +104,7 @@ private struct ChangeListView: View {
             guard let key else { return }
             let changes = key.staged ? viewModel.stagedChanges : viewModel.unstagedChanges
             guard let change = changes.first(where: { $0.id == key.changeID }) else { return }
-            Task {
-                await viewModel.selectChange(change, staged: key.staged)
-            }
+            viewModel.selectChange(change, staged: key.staged)
         }
     }
 }

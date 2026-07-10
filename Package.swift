@@ -29,6 +29,11 @@ let package = Package(
             name: "PorcelainCoreTests",
             dependencies: ["PorcelainCore"],
             path: "Tests/PorcelainCoreTests"
+        ),
+        .testTarget(
+            name: "PorcelainTests",
+            dependencies: ["Porcelain"],
+            path: "Tests/PorcelainTests"
         )
     ]
 )

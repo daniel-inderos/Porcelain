@@ -90,9 +90,7 @@ private struct CommitListView: View {
                 let commitID,
                 let commit = viewModel.commits.first(where: { $0.id == commitID })
             else { return }
-            Task {
-                await viewModel.selectCommit(commit)
-            }
+            viewModel.selectCommit(commit)
         }
     }
 }
@@ -194,14 +192,10 @@ private struct CommitFileListView: View {
             guard let key else { return }
             switch key {
             case .fullDiff:
-                Task {
-                    await viewModel.selectCommitFile(nil)
-                }
+                viewModel.selectCommitFile(nil)
             case .file(let fileID):
                 guard let file = viewModel.commitFiles.first(where: { $0.id == fileID }) else { return }
-                Task {
-                    await viewModel.selectCommitFile(file)
-                }
+                viewModel.selectCommitFile(file)
             }
         }
     }
