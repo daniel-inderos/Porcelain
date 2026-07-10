@@ -39,12 +39,13 @@ public enum GitParsers {
             let indexState = state(for: indexCode, pairedWith: workTreeCode)
             let workTreeState = state(for: workTreeCode, pairedWith: indexCode)
 
-            if indexCode == "R" || indexCode == "C" {
+            if indexCode == "R" || indexCode == "C" || workTreeCode == "R" || workTreeCode == "C" {
                 let next = index + 1
                 if next < entries.count {
-                    originalPath = path
-                    let renamedPath = entries[next]
-                    changes.append(GitChange(path: renamedPath, originalPath: originalPath, indexState: indexState, workTreeState: workTreeState))
+                    // In porcelain v1's `-z` format, rename/copy records put the
+                    // destination first and the source in the following field.
+                    originalPath = entries[next]
+                    changes.append(GitChange(path: path, originalPath: originalPath, indexState: indexState, workTreeState: workTreeState))
                     index += 2
                     continue
                 }

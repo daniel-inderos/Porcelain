@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import PorcelainCore
 
@@ -8,8 +9,8 @@ final class GitParsersTests: XCTestCase {
             " M Sources/App.swift",
             "A  Sources/NewFile.swift",
             "?? Notes.md",
-            "R  Old.swift",
-            "New.swift",
+            "R  New.swift",
+            "Old.swift",
             "UU Sources/Conflict.swift"
         ].joined(separator: "\0") + "\0"
 
@@ -28,6 +29,80 @@ final class GitParsersTests: XCTestCase {
         let renamed = status.changes.first { $0.path == "New.swift" }
         XCTAssertEqual(renamed?.originalPath, "Old.swift")
         XCTAssertEqual(renamed?.indexState, .renamed)
+    }
+
+    func testParsePorcelainStatusRenameAndCopyPathsForIndexAndWorkTree() {
+        let output = [
+            "R  Renamed.swift",
+            "Original.swift",
+            "C  Copied.swift",
+            "CopySource.swift",
+            " R WorktreeRenamed.swift",
+            "WorktreeOriginal.swift",
+            " C WorktreeCopied.swift",
+            "WorktreeCopySource.swift"
+        ].joined(separator: "\0") + "\0"
+
+        let status = GitParsers.parseStatus(output)
+
+        XCTAssertEqual(status.changes.count, 4)
+
+        let indexRename = status.changes.first { $0.path == "Renamed.swift" }
+        XCTAssertEqual(indexRename?.originalPath, "Original.swift")
+        XCTAssertEqual(indexRename?.indexState, .renamed)
+        XCTAssertEqual(indexRename?.workTreeState, .unmodified)
+
+        let indexCopy = status.changes.first { $0.path == "Copied.swift" }
+        XCTAssertEqual(indexCopy?.originalPath, "CopySource.swift")
+        XCTAssertEqual(indexCopy?.indexState, .copied)
+        XCTAssertEqual(indexCopy?.workTreeState, .unmodified)
+
+        let workTreeRename = status.changes.first { $0.path == "WorktreeRenamed.swift" }
+        XCTAssertEqual(workTreeRename?.originalPath, "WorktreeOriginal.swift")
+        XCTAssertEqual(workTreeRename?.indexState, .unmodified)
+        XCTAssertEqual(workTreeRename?.workTreeState, .renamed)
+
+        let workTreeCopy = status.changes.first { $0.path == "WorktreeCopied.swift" }
+        XCTAssertEqual(workTreeCopy?.originalPath, "WorktreeCopySource.swift")
+        XCTAssertEqual(workTreeCopy?.indexState, .unmodified)
+        XCTAssertEqual(workTreeCopy?.workTreeState, .copied)
+    }
+
+    func testParsePorcelainStatusKeepsUnpairedRenameDestination() {
+        let status = GitParsers.parseStatus("R  Renamed.swift\0")
+
+        XCTAssertEqual(status.changes.count, 1)
+        XCTAssertEqual(status.changes[0].path, "Renamed.swift")
+        XCTAssertNil(status.changes[0].originalPath)
+        XCTAssertEqual(status.changes[0].indexState, .renamed)
+    }
+
+    func testParsePorcelainStatusRenameFromRealGit() throws {
+        let repositoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Porcelain-GitParsersTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repositoryURL) }
+
+        try runGit(["init"], in: repositoryURL)
+        try runGit(["config", "user.name", "Porcelain Tests"], in: repositoryURL)
+        try runGit(["config", "user.email", "tests@example.com"], in: repositoryURL)
+        try runGit(["config", "core.hooksPath", "/dev/null"], in: repositoryURL)
+
+        let originalPath = "Old File.swift"
+        let renamedPath = "New File.swift"
+        try Data("original\n".utf8).write(to: repositoryURL.appendingPathComponent(originalPath))
+        try runGit(["add", originalPath], in: repositoryURL)
+        try runGit(["commit", "-m", "Initial commit"], in: repositoryURL)
+        try runGit(["mv", originalPath, renamedPath], in: repositoryURL)
+
+        let output = try runGit(["status", "--porcelain=v1", "-z", "--branch"], in: repositoryURL)
+        let status = GitParsers.parseStatus(String(decoding: output, as: UTF8.self))
+
+        XCTAssertEqual(status.changes.count, 1)
+        XCTAssertEqual(status.changes[0].path, renamedPath)
+        XCTAssertEqual(status.changes[0].originalPath, originalPath)
+        XCTAssertEqual(status.changes[0].indexState, .renamed)
+        XCTAssertEqual(status.changes[0].workTreeState, .unmodified)
     }
 
     func testParseDetachedHeadStatus() {
@@ -193,5 +268,33 @@ final class GitParsersTests: XCTestCase {
             GitHubLinks.newPullRequestURL(remotes: remotes, branch: "feature/native ui")?.absoluteString,
             "https://github.com/example/porcelain/pull/new/feature/native%20ui"
         )
+    }
+
+    @discardableResult
+    private func runGit(_ arguments: [String], in directory: URL) throws -> Data {
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["git"] + arguments
+        process.currentDirectoryURL = directory
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+
+        try process.run()
+        process.waitUntilExit()
+
+        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        let errorOutput = standardError.fileHandleForReading.readDataToEndOfFile()
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "GitParsersTests",
+                code: Int(process.terminationStatus),
+                userInfo: [
+                    NSLocalizedDescriptionKey: "git \(arguments.joined(separator: " ")) failed: \(String(decoding: errorOutput, as: UTF8.self))"
+                ]
+            )
+        }
+        return output
     }
 }
